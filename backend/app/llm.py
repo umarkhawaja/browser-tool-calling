@@ -1,26 +1,23 @@
-"""Thin async client for a local Ollama model (llama3 by default)."""
+"""Minimal async client for a local Ollama model."""
 from __future__ import annotations
 
 import json
-import os
 from typing import Any, Dict, List
 
 import httpx
 
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-MODEL = os.environ.get("MODEL", "llama3.1")
+from app.config import MODEL, OLLAMA_URL
 
 
 class LLMError(RuntimeError):
-    pass
+    """Raised when Ollama is unreachable or returns something unusable."""
 
 
 async def chat_json(messages: List[Dict[str, str]]) -> Dict[str, Any]:
-    """Send a chat request to Ollama and return the assistant reply parsed as JSON.
+    """Ask the model for one reply and return it parsed as JSON.
 
-    We use Ollama's `format: "json"` so the model is constrained to emit valid
-    JSON, which makes the agent's action protocol robust without any parsing
-    gymnastics on our side.
+    `format="json"` makes Ollama emit strictly valid JSON, so the agent's
+    action protocol stays robust without any hand-written parsing.
     """
     payload = {
         "model": MODEL,
@@ -29,12 +26,12 @@ async def chat_json(messages: List[Dict[str, str]]) -> Dict[str, Any]:
         "format": "json",
         "options": {"temperature": 0.1},
     }
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        try:
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
             resp.raise_for_status()
-        except httpx.HTTPError as e:
-            raise LLMError(f"Could not reach Ollama at {OLLAMA_URL}: {e}") from e
+    except httpx.HTTPError as e:
+        raise LLMError(f"Could not reach Ollama at {OLLAMA_URL}: {e}") from e
 
     content = resp.json()["message"]["content"]
     try:

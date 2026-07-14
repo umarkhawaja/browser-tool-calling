@@ -4,7 +4,8 @@ import httpx
 import pytest
 import respx
 
-from llm import OLLAMA_URL, LLMError, chat_json
+from app.config import OLLAMA_URL
+from app.llm import LLMError, chat_json
 
 
 def _reply(content: str) -> httpx.Response:

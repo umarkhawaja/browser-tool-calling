@@ -1,8 +1,8 @@
 """Tests for the agent loop. The LLM and the browser are both faked, so these run
 without Ollama or a real Chromium."""
-import agent
-from agent import _format_state, run_agent
-from llm import LLMError
+from app import agent
+from app.agent import _format_state, run_agent
+from app.llm import LLMError
 
 
 class FakeBrowser:

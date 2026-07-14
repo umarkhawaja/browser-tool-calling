@@ -10,7 +10,7 @@ trap cleanup EXIT INT TERM
 BACKEND_PORT="${BACKEND_PORT:-8008}"
 
 echo "▶ backend  http://localhost:${BACKEND_PORT}"
-( cd backend && ./.venv/bin/uvicorn main:app --host 0.0.0.0 --port "$BACKEND_PORT" --reload ) &
+( cd backend && ./.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" --reload ) &
 
 echo "▶ frontend http://localhost:5173"
 ( cd frontend && npm run dev ) &

@@ -14,22 +14,15 @@ Server -> client:  a stream of events, each a JSON object with a "type":
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from agent import run_agent
-from browser import BrowserSession
+from app.agent import run_agent
+from app.browser import BrowserSession
 
-app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# One shared, visible browser for the app. Started lazily on first connection.
+# One shared, visible browser for the app, started lazily on first use.
 _browser: BrowserSession | None = None
 _browser_lock = asyncio.Lock()
 
@@ -43,10 +36,20 @@ async def get_browser() -> BrowserSession:
         return _browser
 
 
-@app.on_event("shutdown")
-async def _shutdown() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield  # startup is lazy; nothing to do here
     if _browser is not None:
         await _browser.stop()
+
+
+app = FastAPI(title="Local Browser Agent", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.websocket("/ws")
@@ -54,20 +57,17 @@ async def ws(sock: WebSocket) -> None:
     await sock.accept()
     browser = await get_browser()
 
-    async def emit(event: dict) -> None:
-        await sock.send_json(event)
-
     try:
         while True:
             msg = await sock.receive_json()
             task = (msg.get("task") or "").strip()
             if not task:
                 continue
-            await emit({"type": "status", "text": "running"})
+            await sock.send_json({"type": "status", "text": "running"})
             try:
-                await run_agent(task, browser, emit)
+                await run_agent(task, browser, sock.send_json)
             except Exception as e:  # never let one bad run kill the socket
-                await emit({"type": "error", "text": f"Agent crashed: {e}"})
-            await emit({"type": "status", "text": "idle"})
+                await sock.send_json({"type": "error", "text": f"Agent crashed: {e}"})
+            await sock.send_json({"type": "status", "text": "idle"})
     except WebSocketDisconnect:
         pass

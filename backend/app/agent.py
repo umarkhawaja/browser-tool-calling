@@ -12,10 +12,9 @@ from __future__ import annotations
 import json
 from typing import Any, Awaitable, Callable, Dict, List
 
-from browser import BrowserSession
-from llm import LLMError, chat_json
-
-MAX_STEPS = 15
+from app.browser import BrowserSession
+from app.config import MAX_STEPS
+from app.llm import LLMError, chat_json
 
 SYSTEM_PROMPT = """You are a web-browsing agent. You control a real web browser to \
 accomplish the user's task.
@@ -46,13 +45,32 @@ Emit = Callable[[Dict[str, Any]], Awaitable[None]]
 
 
 def _format_state(url: str, elements: List[Dict[str, Any]]) -> str:
+    """Render the current page as the text block we feed to the model."""
     lines = [f"Current URL: {url}", "Interactive elements:"]
     if not elements:
         lines.append("  (none detected)")
     for el in elements[:60]:
-        t = f"<{el['tag']}{(' type=' + el['type']) if el['type'] else ''}>"
-        lines.append(f"  [{el['index']}] {t} {el['label']}")
+        tag = f"<{el['tag']}{(' type=' + el['type']) if el['type'] else ''}>"
+        lines.append(f"  [{el['index']}] {tag} {el['label']}")
     return "\n".join(lines)
+
+
+async def _execute(browser: BrowserSession, reply: Dict[str, Any]) -> str:
+    """Run the single action the model chose and return a human-readable result."""
+    action = reply.get("action", "")
+    if action == "go_to_url":
+        return await browser.go_to_url(reply["url"])
+    if action == "click":
+        return await browser.click(int(reply["index"]))
+    if action == "input_text":
+        return await browser.input_text(int(reply["index"]), reply.get("text", ""))
+    if action == "press_enter":
+        return await browser.press_enter()
+    if action == "scroll":
+        return await browser.scroll(reply.get("direction", "down"))
+    if action == "extract_text":
+        return await browser.extract_text()
+    return f"Unknown action {action!r}."
 
 
 async def run_agent(task: str, browser: BrowserSession, emit: Emit) -> None:
@@ -61,10 +79,9 @@ async def run_agent(task: str, browser: BrowserSession, emit: Emit) -> None:
         {"role": "user", "content": f"Task: {task}"},
     ]
 
-    for step in range(1, MAX_STEPS + 1):
-        # 1. Observe current page and show it to the model + the user.
-        elements = await browser.elements()
-        state = _format_state(browser.url(), elements)
+    for _ in range(MAX_STEPS):
+        # 1. Observe the current page and show it to the model + the user.
+        state = _format_state(browser.url(), await browser.elements())
         await emit({"type": "screenshot", "data": await browser.screenshot_b64()})
         messages.append({"role": "user", "content": state})
 
@@ -76,34 +93,20 @@ async def run_agent(task: str, browser: BrowserSession, emit: Emit) -> None:
             return
         messages.append({"role": "assistant", "content": json.dumps(reply)})
 
-        action = reply.get("action", "")
-        thought = reply.get("thought", "")
-        if thought:
-            await emit({"type": "thought", "text": thought})
+        if reply.get("thought"):
+            await emit({"type": "thought", "text": reply["thought"]})
 
-        # 3. Execute the chosen action.
+        # 3. The model can finish at any point.
+        if reply.get("action") == "done":
+            await emit({"type": "answer", "text": reply.get("answer", "(no answer)")})
+            return
+
+        # 4. Otherwise execute the action and feed the result back in.
         try:
-            if action == "done":
-                await emit({"type": "answer", "text": reply.get("answer", "(no answer)")})
-                return
-            elif action == "go_to_url":
-                result = await browser.go_to_url(reply["url"])
-            elif action == "click":
-                result = await browser.click(int(reply["index"]))
-            elif action == "input_text":
-                result = await browser.input_text(int(reply["index"]), reply.get("text", ""))
-            elif action == "press_enter":
-                result = await browser.press_enter()
-            elif action == "scroll":
-                result = await browser.scroll(reply.get("direction", "down"))
-            elif action == "extract_text":
-                result = await browser.extract_text()
-            else:
-                result = f"Unknown action {action!r}."
+            result = await _execute(browser, reply)
         except Exception as e:  # surface any browser failure back to the model
             result = f"Action failed: {e}"
-
-        await emit({"type": "action", "text": f"{action}", "detail": result[:300]})
+        await emit({"type": "action", "text": reply.get("action", ""), "detail": result[:300]})
         messages.append({"role": "user", "content": f"Result: {result}"})
 
     await emit({"type": "answer", "text": "Reached the step limit without finishing."})

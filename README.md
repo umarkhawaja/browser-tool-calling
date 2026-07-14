@@ -35,7 +35,7 @@ Backend (already scripted, but for reference):
 ```bash
 cd backend
 python3 -m venv .venv
-./.venv/bin/pip install -r requirements.txt
+./.venv/bin/pip install -e ".[dev]"       # runtime + test deps
 ./.venv/bin/python -m playwright install chromium
 ```
 
@@ -47,31 +47,41 @@ npm install
 
 ## Run
 
-Two terminals:
-
+One command runs both the backend (`:8008`) and the frontend (`:5173`):
 ```bash
-# 1) backend  (opens the visible browser on first chat)
-cd backend && ./run.sh
+./dev.sh
 ```
+
+Or start them separately in two terminals:
 ```bash
-# 2) frontend
+cd backend && ./run.sh          # opens the visible browser on first chat
 cd frontend && npm run dev
 ```
 
 Open http://localhost:5173 and ask the agent something, e.g.
 *"Go to Hacker News and tell me the top story."*
 
+## Tests
+
+```bash
+./test.sh          # runs backend (pytest) + frontend (vitest) concurrently
+```
+
 ## Configuration
 
 Environment variables read by the backend:
 
-| Var          | Default                   | Meaning                     |
-|--------------|---------------------------|-----------------------------|
-| `MODEL`      | `llama3.1`                | Ollama model name           |
-| `OLLAMA_URL` | `http://localhost:11434`  | Ollama server URL           |
+| Var            | Default                   | Meaning                          |
+|----------------|---------------------------|----------------------------------|
+| `MODEL`        | `llama3.1`                | Ollama model name                |
+| `OLLAMA_URL`   | `http://localhost:11434`  | Ollama server URL                |
+| `MAX_STEPS`    | `15`                      | Max actions per task             |
+| `BACKEND_PORT` | `8008`                    | Port the API/WebSocket listens on |
+
+The frontend targets `ws://localhost:8008/ws`; override with `VITE_WS_URL`.
 
 ```bash
-MODEL=llama3 ./run.sh
+MODEL=llama3 BACKEND_PORT=9000 VITE_WS_URL=ws://localhost:9000/ws ./dev.sh
 ```
 
 ## How it works
@@ -91,13 +101,21 @@ Each step the agent:
 
 ```
 backend/
-  main.py       FastAPI app + WebSocket protocol
-  agent.py      the agent loop + system prompt
-  browser.py    Playwright wrapper (visible browser, actions, screenshots)
-  llm.py        Ollama JSON chat client
+  pyproject.toml           deps + tooling config (single source of truth)
+  app/
+    main.py                FastAPI app + WebSocket protocol
+    agent.py               the agent loop + system prompt
+    browser.py             Playwright wrapper (visible browser, actions, screenshots)
+    llm.py                 Ollama JSON chat client
+    config.py              env-based configuration
+  tests/                   pytest suite (faked LLM + browser)
 frontend/
-  src/App.jsx                    WebSocket state + layout
-  src/components/ChatPanel.jsx   chat side panel
-  src/components/PreviewWindow.jsx  live browser preview
-  src/styles.css                 minimal dark UI
+  src/
+    App.jsx                thin layout
+    hooks/useAgentSocket.js  WebSocket connection + chat/preview state
+    components/ChatPanel.jsx      chat side panel
+    components/PreviewWindow.jsx  live browser preview
+    index.css              minimal dark UI
+dev.sh                     run backend + frontend together
+test.sh                    run both test suites
 ```

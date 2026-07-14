@@ -1,7 +1,8 @@
-"""Playwright browser wrapper: launches a *visible* browser and exposes a small
-set of actions the agent can call. After every action it can produce a fresh
-screenshot (base64 PNG) and a numbered list of interactive elements so the model
-can decide what to do next.
+"""Playwright browser wrapper.
+
+Launches a *visible* browser and exposes a small set of actions the agent can
+call. It can also produce a screenshot (base64 PNG) and a numbered list of the
+page's interactive elements, so the model always knows what it can act on.
 """
 from __future__ import annotations
 
@@ -16,10 +17,9 @@ from playwright.async_api import Browser, Page, async_playwright
 COLLECT_JS = """
 () => {
   const sel = 'a, button, input, textarea, select, [role=button], [onclick]';
-  const els = Array.from(document.querySelectorAll(sel));
   const out = [];
   let i = 0;
-  for (const el of els) {
+  for (const el of document.querySelectorAll(sel)) {
     const r = el.getBoundingClientRect();
     const s = window.getComputedStyle(el);
     if (r.width === 0 || r.height === 0) continue;
@@ -45,7 +45,7 @@ class BrowserSession:
 
     async def start(self) -> None:
         self._pw = await async_playwright().start()
-        # headless=False -> the real browser window is visible on the desktop.
+        # headless=False -> a real browser window is visible on the desktop.
         self.browser = await self._pw.chromium.launch(
             headless=False, args=["--window-size=1280,800"]
         )
