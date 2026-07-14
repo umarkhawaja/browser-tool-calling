@@ -86,7 +86,13 @@ MODEL=llama3 BACKEND_PORT=9000 VITE_WS_URL=ws://localhost:9000/ws ./dev.sh
 
 ## How it works
 
-Each step the agent:
+**Chat vs. browse.** Every message first goes through a quick router
+([router.py](backend/app/router.py)): plain conversation gets a direct text
+reply, while anything that needs the web starts the browser agent. So you can
+just talk to it in one input box — the browser only opens when a task actually
+needs it. Press **Stop** to cancel a run mid-way.
+
+When a task runs, each step the agent:
 1. reads the current page (URL + a numbered list of interactive elements, tagged
    in the DOM so clicks never rely on guessed CSS selectors),
 2. asks the model for **one** next action as strict JSON

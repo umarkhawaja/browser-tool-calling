@@ -97,24 +97,53 @@ body {
 .msg.answer .bubble { border-color: var(--accent-soft); background: var(--accent-soft); }
 .msg.error .bubble { border-color: var(--danger); color: var(--danger); }
 
-.detail {
-  margin-top: 6px;
+/* Compact, muted step lines for the agent's thoughts and actions. */
+.step {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12.5px;
+  color: var(--muted);
+  padding: 1px 2px;
+}
+.step-tag {
+  flex: none;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--accent);
+  opacity: 0.8;
+}
+.step-text { word-break: break-word; }
+
+/* Centered system notices (stopped / busy). */
+.note {
+  align-self: center;
   font-size: 12px;
   color: var(--muted);
-  border-top: 1px dashed var(--border);
-  padding-top: 6px;
+  font-style: italic;
 }
 
-.typing { color: var(--muted); }
+.spinner {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  display: inline-block;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 
 .composer {
   display: flex;
   gap: 8px;
   padding: 12px;
   border-top: 1px solid var(--border);
+  align-items: flex-end;
 }
 
-.composer input {
+.composer textarea {
   flex: 1;
   background: var(--panel-2);
   border: 1px solid var(--border);
@@ -122,11 +151,18 @@ body {
   border-radius: 10px;
   padding: 10px 12px;
   font-size: 14px;
+  font-family: inherit;
+  line-height: 1.4;
   outline: none;
+  resize: none;
+  max-height: 140px;
+  overflow-y: auto;
 }
-.composer input:focus { border-color: var(--accent); }
+.composer textarea:focus { border-color: var(--accent); }
 
 .composer button {
+  flex: none;
+  height: 40px;
   background: var(--accent);
   color: #fff;
   border: none;
@@ -136,6 +172,7 @@ body {
   cursor: pointer;
 }
 .composer button:disabled { opacity: 0.5; cursor: default; }
+.composer button.stop { background: var(--danger); }
 
 /* ---------- Preview window ---------- */
 .preview {
