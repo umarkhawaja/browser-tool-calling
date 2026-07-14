@@ -29,3 +29,14 @@ async def test_routes_task_to_browse():
 async def test_unknown_mode_defaults_to_browse():
     respx.post(f"{OLLAMA_URL}/api/chat").mock(return_value=_reply('{"mode": "???"}'))
     assert (await route("do a thing"))["mode"] == "browse"
+
+
+# The keyword/domain guardrail short-circuits to browse without any LLM call.
+async def test_keyword_forces_browse():
+    out = await route("Give me a summary of top stories on hackernoon")
+    assert out["mode"] == "browse"
+
+
+async def test_domain_forces_browse():
+    out = await route("open example.com and read it")
+    assert out["mode"] == "browse"
