@@ -6,8 +6,9 @@ page's interactive elements, so the model always knows what it can act on.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from playwright.async_api import Browser, Page, async_playwright
 
@@ -42,15 +43,16 @@ class BrowserSession:
         self._pw = None
         self.browser: Optional[Browser] = None
         self.page: Optional[Page] = None
+        self._cdp = None
+        self._frame_listener = None
 
     async def start(self) -> None:
         self._pw = await async_playwright().start()
-        # headless=False -> a real browser window is visible on the desktop.
-        self.browser = await self._pw.chromium.launch(
-            headless=False, args=["--window-size=1280,800"]
-        )
+        # headless=True -> no OS window pops up; the UI shows a live screencast.
+        self.browser = await self._pw.chromium.launch(headless=True)
         ctx = await self.browser.new_context(viewport={"width": 1280, "height": 800})
         self.page = await ctx.new_page()
+        self._cdp = await ctx.new_cdp_session(self.page)
         await self.page.goto("about:blank")
 
     async def stop(self) -> None:
@@ -101,8 +103,43 @@ class BrowserSession:
             return []
 
     async def screenshot_b64(self) -> str:
-        png = await self.page.screenshot(type="png")
-        return base64.b64encode(png).decode("ascii")
+        img = await self.page.screenshot(type="jpeg", quality=70)
+        return base64.b64encode(img).decode("ascii")
 
     def url(self) -> str:
         return self.page.url if self.page else "about:blank"
+
+    # --- live screencast ---------------------------------------------------
+    async def start_screencast(self, on_frame: Callable[[str], Awaitable[None]]) -> None:
+        """Stream live JPEG frames of the page to `on_frame(base64_str)`.
+
+        Uses Chrome DevTools' screencast, which pushes a frame on every visual
+        change without interfering with the agent's page actions.
+        """
+        async def handle(params: Dict[str, Any]) -> None:
+            try:
+                await on_frame(params["data"])
+            except Exception:
+                pass  # e.g. the socket went away; just drop the frame
+            try:
+                await self._cdp.send(
+                    "Page.screencastFrameAck", {"sessionId": params["sessionId"]}
+                )
+            except Exception:
+                pass
+
+        self._frame_listener = lambda params: asyncio.create_task(handle(params))
+        self._cdp.on("Page.screencastFrame", self._frame_listener)
+        await self._cdp.send(
+            "Page.startScreencast",
+            {"format": "jpeg", "quality": 60, "maxWidth": 1280, "maxHeight": 800},
+        )
+
+    async def stop_screencast(self) -> None:
+        try:
+            await self._cdp.send("Page.stopScreencast")
+        except Exception:
+            pass
+        if self._frame_listener is not None:
+            self._cdp.remove_listener("Page.screencastFrame", self._frame_listener)
+            self._frame_listener = None

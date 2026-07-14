@@ -1,12 +1,12 @@
 # Local Browser Agent
 
 A small app where a **local LLM** (llama3 via [Ollama](https://ollama.com)) drives a
-**real, visible browser** to do things on the web from chat prompts.
+browser to do things on the web from chat prompts.
 
 - **Backend** — Python, FastAPI + a WebSocket, low-level agent loop, Playwright.
 - **Frontend** — React (Vite): a chat side panel + a live preview of the browser.
-- The browser is **headed** (a real Chromium window opens), *and* every step is
-  streamed as a screenshot into the preview pane.
+- Chromium runs **headless** (no window pops up); the page is streamed live into
+  the in-app preview pane via a CDP screencast.
 
 ```
 ┌────────────┬────────────────────────────┐
@@ -54,7 +54,7 @@ One command runs both the backend (`:8008`) and the frontend (`:5173`):
 
 Or start them separately in two terminals:
 ```bash
-cd backend && ./run.sh          # opens the visible browser on first chat
+cd backend && ./run.sh          # headless browser; preview shows in the UI
 cd frontend && npm run dev
 ```
 

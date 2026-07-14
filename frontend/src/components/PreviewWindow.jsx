@@ -12,7 +12,7 @@ export default function PreviewWindow({ screenshot, running }) {
       </header>
       <div className="preview-body">
         {screenshot ? (
-          <img src={`data:image/png;base64,${screenshot}`} alt="browser preview" />
+          <img src={`data:image/jpeg;base64,${screenshot}`} alt="browser preview" />
         ) : (
           <div className="placeholder">
             The agent's browser will appear here once it starts navigating.

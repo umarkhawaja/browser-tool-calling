@@ -11,7 +11,7 @@ describe("PreviewWindow", () => {
   it("renders the screenshot as a data-URI image when provided", () => {
     render(<PreviewWindow screenshot="ABC123" running={true} />);
     const img = screen.getByAltText("browser preview");
-    expect(img).toHaveAttribute("src", "data:image/png;base64,ABC123");
+    expect(img).toHaveAttribute("src", "data:image/jpeg;base64,ABC123");
   });
 
   it("shows the live indicator only while running", () => {

@@ -65,14 +65,20 @@ async def ws(sock: WebSocket) -> None:
 
     async def do_browse(task: str) -> None:
         await sock.send_json({"type": "status", "text": "running"})
+        browser = None
         try:
-            browser = await get_browser()  # opens the window on first browse only
+            browser = await get_browser()  # headless; starts on first browse only
+            await browser.start_screencast(
+                lambda data: sock.send_json({"type": "screenshot", "data": data})
+            )
             await run_agent(task, browser, sock.send_json)
         except asyncio.CancelledError:
             await sock.send_json({"type": "note", "text": "Stopped."})
         except Exception as e:  # never let one bad run kill the socket
             await sock.send_json({"type": "error", "text": f"Agent crashed: {e}"})
         finally:
+            if browser is not None:
+                await browser.stop_screencast()
             await sock.send_json({"type": "status", "text": "idle"})
 
     try:
