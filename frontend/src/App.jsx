@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import ChatPanel from "./components/ChatPanel.jsx";
 import PreviewWindow from "./components/PreviewWindow.jsx";
 
-const WS_URL = "ws://localhost:8000/ws";
+const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:8008/ws";
 
 export default function App() {
   const [messages, setMessages] = useState([]); // {role, kind, text}

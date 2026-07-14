@@ -7,8 +7,10 @@ cd "$(dirname "$0")"
 cleanup() { kill 0 2>/dev/null; }
 trap cleanup EXIT INT TERM
 
-echo "▶ backend  http://localhost:8000"
-( cd backend && ./.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --reload ) &
+BACKEND_PORT="${BACKEND_PORT:-8008}"
+
+echo "▶ backend  http://localhost:${BACKEND_PORT}"
+( cd backend && ./.venv/bin/uvicorn main:app --host 0.0.0.0 --port "$BACKEND_PORT" --reload ) &
 
 echo "▶ frontend http://localhost:5173"
 ( cd frontend && npm run dev ) &
