@@ -30,12 +30,16 @@ Available actions (JSON shapes):
   {"thought": "...", "action": "press_enter"}
   {"thought": "...", "action": "scroll", "direction": "down"|"up"}
   {"thought": "...", "action": "extract_text"}
+  {"thought": "...", "action": "dismiss_dialog"}
   {"thought": "...", "action": "done", "answer": "final answer to the user"}
 
 Rules:
 - "thought" is a short explanation of why you chose this action.
 - Only use element indices that appear in the current page listing.
 - To search or fill a field: input_text into it, then press_enter (or click a button).
+- Cookie/consent dialogs are accepted automatically after you navigate. If a
+  click keeps failing or a popup is covering the page, use "dismiss_dialog"
+  once, then continue.
 - When you have enough information to answer, use the "done" action.
 - Prefer as few steps as possible.
 """
@@ -70,6 +74,8 @@ async def _execute(browser: BrowserSession, reply: Dict[str, Any]) -> str:
         return await browser.scroll(reply.get("direction", "down"))
     if action == "extract_text":
         return await browser.extract_text()
+    if action == "dismiss_dialog":
+        return await browser.dismiss_overlays() or "No dialog found."
     return f"Unknown action {action!r}."
 
 

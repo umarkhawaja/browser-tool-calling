@@ -37,6 +37,24 @@ COLLECT_JS = """
 }
 """
 
+# Accessible-name labels of "accept" buttons on common consent dialogs
+# (OneTrust, Sourcepoint, Google, BBC, …). Matched case-insensitively and
+# exactly, so negatives like "I do not agree" are never clicked.
+CONSENT_LABELS = (
+    "Accept all",
+    "Accept all cookies",
+    "Accept cookies",
+    "I agree",
+    "Yes, I agree",
+    "I accept",
+    "Agree",
+    "Allow all",
+    "Allow cookies",
+    "Got it",
+    "Accept",
+    "OK",
+)
+
 
 class BrowserSession:
     def __init__(self) -> None:
@@ -66,12 +84,41 @@ class BrowserSession:
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
         await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        return f"Navigated to {self.page.url}"
+        await self.page.wait_for_timeout(1000)  # let consent banners render
+        dismissed = await self.dismiss_overlays()
+        msg = f"Navigated to {self.page.url}"
+        return f"{msg}; {dismissed}" if dismissed else msg
+
+    async def dismiss_overlays(self) -> Optional[str]:
+        """Best-effort: accept a cookie/consent dialog so it stops blocking clicks.
+
+        Only clicks buttons whose accessible name exactly matches a known
+        "accept" label (case-insensitive), across every frame — so it never
+        hits "I do not agree", "Reject", or "Manage options".
+        """
+        for frame in self.page.frames:
+            for label in CONSENT_LABELS:
+                try:
+                    button = frame.get_by_role("button", name=label, exact=True)
+                    if await button.count() and await button.first.is_visible():
+                        await button.first.click(timeout=2000)
+                        await self.page.wait_for_timeout(400)
+                        return f"Accepted a cookie/consent dialog ({label!r})"
+                except Exception:
+                    continue
+        return None
 
     async def click(self, index: int) -> str:
         loc = self.page.locator(f'[data-agent-idx="{index}"]')
         label = (await loc.inner_text())[:80] if await loc.count() else ""
-        await loc.first.click(timeout=10000)
+        try:
+            await loc.first.click(timeout=10000)
+        except Exception:
+            # A late consent/overlay may be intercepting the click; clear it
+            # and retry once before giving up.
+            if not await self.dismiss_overlays():
+                raise
+            await loc.first.click(timeout=10000)
         await self.page.wait_for_timeout(800)
         return f"Clicked element [{index}] {label!r}"
 

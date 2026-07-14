@@ -46,6 +46,10 @@ class FakeBrowser:
         self.calls.append(("extract_text",))
         return "page text"
 
+    async def dismiss_overlays(self):
+        self.calls.append(("dismiss_overlays",))
+        return "Accepted a cookie/consent dialog ('I agree')"
+
 
 def _scripted(replies):
     """Return a fake chat_json that hands back the given replies in order."""
@@ -105,6 +109,23 @@ async def test_run_agent_surfaces_llm_error(monkeypatch):
 
     await run_agent("x", FakeBrowser(), emit)
     assert any(e["type"] == "error" for e in events)
+
+
+async def test_run_agent_can_dismiss_dialog(monkeypatch):
+    monkeypatch.setattr(agent, "chat_json", _scripted([
+        {"action": "dismiss_dialog"},
+        {"action": "done", "answer": "ok"},
+    ]))
+    events = []
+
+    async def emit(e):
+        events.append(e)
+
+    browser = FakeBrowser()
+    await run_agent("x", browser, emit)
+    assert ("dismiss_overlays",) in browser.calls
+    dismiss = [e for e in events if e["type"] == "action" and e["text"] == "dismiss_dialog"]
+    assert dismiss and "cookie/consent" in dismiss[0]["detail"]
 
 
 async def test_run_agent_handles_unknown_action(monkeypatch):
