@@ -52,13 +52,27 @@ class FakeBrowser:
 
 
 def _scripted(replies):
-    """Return a fake chat_json that hands back the given replies in order."""
+    """Return a fake chat_tools that hands back the given messages in order."""
     queue = list(replies)
 
-    async def fake_chat(messages):
+    async def fake_chat(messages, tools):
         return queue.pop(0)
 
     return fake_chat
+
+
+def _tool_call(name, args, content=""):
+    """An assistant message that calls one tool (native tool-calling shape)."""
+    return {
+        "role": "assistant",
+        "content": content,
+        "tool_calls": [{"function": {"name": name, "arguments": args}}],
+    }
+
+
+def _final(text):
+    """An assistant message with no tool call -> the final answer."""
+    return {"role": "assistant", "content": text}
 
 
 # --- _format_state ---------------------------------------------------------
@@ -74,11 +88,11 @@ def test_format_state_handles_no_elements():
 
 
 # --- run_agent -------------------------------------------------------------
-async def test_run_agent_executes_actions_then_finishes(monkeypatch):
-    monkeypatch.setattr(agent, "chat_json", _scripted([
-        {"thought": "go", "action": "go_to_url", "url": "example.com"},
-        {"thought": "type", "action": "input_text", "index": 0, "text": "hello"},
-        {"thought": "done", "action": "done", "answer": "All set"},
+async def test_run_agent_executes_tools_then_finishes(monkeypatch):
+    monkeypatch.setattr(agent, "chat_tools", _scripted([
+        _tool_call("go_to_url", {"url": "example.com"}),
+        _tool_call("input_text", {"index": 0, "text": "hello"}),
+        _final("All set"),
     ]))
     events = []
 
@@ -97,11 +111,45 @@ async def test_run_agent_executes_actions_then_finishes(monkeypatch):
     assert answers and answers[0]["text"] == "All set"
 
 
+async def test_run_agent_parses_stringified_arguments(monkeypatch):
+    # Some models return tool arguments as a JSON string instead of an object.
+    monkeypatch.setattr(agent, "chat_tools", _scripted([
+        _tool_call("click", '{"index": 3}'),
+        _final("done"),
+    ]))
+    events = []
+
+    async def emit(e):
+        events.append(e)
+
+    browser = FakeBrowser()
+    await run_agent("x", browser, emit)
+    assert ("click", 3) in browser.calls
+
+
+async def test_run_agent_nudges_on_toolcall_written_as_text(monkeypatch):
+    # First reply fumbles a tool call into the message body (no tool_calls);
+    # the loop should nudge and continue rather than answer with the JSON.
+    monkeypatch.setattr(agent, "chat_tools", _scripted([
+        _final('{"name": "get_element_text", "parameters": {"index": 0}}'),
+        _final("The heading is Example Domain"),
+    ]))
+    events = []
+
+    async def emit(e):
+        events.append(e)
+
+    await run_agent("x", FakeBrowser(), emit)
+    answers = [e for e in events if e["type"] == "answer"]
+    assert len(answers) == 1
+    assert answers[0]["text"] == "The heading is Example Domain"
+
+
 async def test_run_agent_surfaces_llm_error(monkeypatch):
-    async def boom(messages):
+    async def boom(messages, tools):
         raise LLMError("no ollama")
 
-    monkeypatch.setattr(agent, "chat_json", boom)
+    monkeypatch.setattr(agent, "chat_tools", boom)
     events = []
 
     async def emit(e):
@@ -112,9 +160,9 @@ async def test_run_agent_surfaces_llm_error(monkeypatch):
 
 
 async def test_run_agent_can_dismiss_dialog(monkeypatch):
-    monkeypatch.setattr(agent, "chat_json", _scripted([
-        {"action": "dismiss_dialog"},
-        {"action": "done", "answer": "ok"},
+    monkeypatch.setattr(agent, "chat_tools", _scripted([
+        _tool_call("dismiss_dialog", {}),
+        _final("ok"),
     ]))
     events = []
 
@@ -128,10 +176,10 @@ async def test_run_agent_can_dismiss_dialog(monkeypatch):
     assert dismiss and "cookie/consent" in dismiss[0]["detail"]
 
 
-async def test_run_agent_handles_unknown_action(monkeypatch):
-    monkeypatch.setattr(agent, "chat_json", _scripted([
-        {"action": "frobnicate"},
-        {"action": "done", "answer": "ok"},
+async def test_run_agent_handles_unknown_tool(monkeypatch):
+    monkeypatch.setattr(agent, "chat_tools", _scripted([
+        _tool_call("frobnicate", {}),
+        _final("ok"),
     ]))
     events = []
 
@@ -140,4 +188,4 @@ async def test_run_agent_handles_unknown_action(monkeypatch):
 
     await run_agent("x", FakeBrowser(), emit)
     action_events = [e for e in events if e["type"] == "action"]
-    assert any("Unknown action" in e.get("detail", "") for e in action_events)
+    assert any("Unknown tool" in e.get("detail", "") for e in action_events)

@@ -92,16 +92,19 @@ reply, while anything that needs the web starts the browser agent. So you can
 just talk to it in one input box — the browser only opens when a task actually
 needs it. Press **Stop** to cancel a run mid-way.
 
-When a task runs, each step the agent:
-1. reads the current page (URL + a numbered list of interactive elements, tagged
-   in the DOM so clicks never rely on guessed CSS selectors),
-2. asks the model for **one** next action as strict JSON
-   (Ollama's `format: "json"` guarantees valid JSON),
-3. executes it in Playwright (`go_to_url`, `click`, `input_text`, `press_enter`,
-   `scroll`, `extract_text`, `done`),
+When a task runs, the agent uses the model's **native tool calling**
+(Ollama's `tools` API): it passes typed function schemas and the model returns a
+structured `tool_calls` array. Each step it:
+1. asks the model which tool to call, given the current page (URL + a numbered
+   list of interactive elements, tagged in the DOM so clicks never rely on
+   guessed CSS selectors),
+2. executes the chosen tool in Playwright (`go_to_url`, `click`, `input_text`,
+   `press_enter`, `scroll`, `extract_text`, `dismiss_dialog`),
+3. feeds the result **plus the new page state** back as a `tool` message,
 4. streams a screenshot + narration to the UI,
 
-…looping until the model calls `done` or it hits the step limit (15).
+…looping until the model replies with a plain-text answer (no tool call) or it
+hits the step limit (15).
 
 ## Files
 
@@ -110,9 +113,10 @@ backend/
   pyproject.toml           deps + tooling config (single source of truth)
   app/
     main.py                FastAPI app + WebSocket protocol
-    agent.py               the agent loop + system prompt
-    browser.py             Playwright wrapper (visible browser, actions, screenshots)
-    llm.py                 Ollama JSON chat client
+    agent.py               the tool-calling agent loop + tool schemas
+    browser.py             Playwright wrapper (headless browser, actions, screencast)
+    router.py              chat vs. browse routing
+    llm.py                 Ollama client (JSON mode + native tool calling)
     config.py              env-based configuration
   tests/                   pytest suite (faked LLM + browser)
 frontend/

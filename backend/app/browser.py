@@ -1,8 +1,9 @@
 """Playwright browser wrapper.
 
-Launches a *visible* browser and exposes a small set of actions the agent can
-call. It can also produce a screenshot (base64 PNG) and a numbered list of the
-page's interactive elements, so the model always knows what it can act on.
+Launches a *headless* browser and exposes a small set of actions the agent can
+call. It can also produce a screenshot (base64 JPEG), stream a live CDP
+screencast, and return a numbered list of the page's interactive elements, so the
+model always knows what it can act on.
 """
 from __future__ import annotations
 
