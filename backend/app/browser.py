@@ -4,14 +4,28 @@ Launches a *headless* browser and exposes a small set of actions the agent can
 call. It can also produce a screenshot (base64 JPEG), stream a live CDP
 screencast, and return a numbered list of the page's interactive elements, so the
 model always knows what it can act on.
+
+The same page can be driven by a human: `user_*` methods dispatch raw mouse and
+keyboard input at viewport coordinates, which is what makes the frontend's live
+preview interactive rather than a passive image.
 """
+
 from __future__ import annotations
 
 import asyncio
 import base64
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+import contextlib
+from collections.abc import Awaitable
+from typing import Any, Callable
 
 from playwright.async_api import Browser, Page, async_playwright
+
+from app.config import BROWSER_LOCALE
+
+# The page is rendered — and screencast — at exactly this size, so a screencast
+# frame maps 1:1 onto viewport CSS pixels and the frontend can turn a click on
+# the preview image into a click on the page with a single scale factor.
+VIEWPORT = {"width": 1280, "height": 800}
 
 # JS that tags every visible interactive element with a stable index and returns
 # a compact description. Clicking is then done by that index, so the model never
@@ -30,8 +44,12 @@ COLLECT_JS = """
     const label = (el.innerText || el.value || el.getAttribute('placeholder') ||
                    el.getAttribute('aria-label') || el.getAttribute('name') || '')
                   .replace(/\\s+/g, ' ').trim().slice(0, 120);
+    // The rect is in viewport CSS pixels, the same space a screencast frame
+    // covers, so the UI can draw each box straight onto the live preview.
     out.push({ index: i, tag: el.tagName.toLowerCase(),
-               type: el.getAttribute('type') || '', label });
+               type: el.getAttribute('type') || '', label,
+               rect: [Math.round(r.x), Math.round(r.y),
+                      Math.round(r.width), Math.round(r.height)] });
     i++;
   }
   return out;
@@ -57,24 +75,88 @@ CONSENT_LABELS = (
 )
 
 
+LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "[::1]", "0.0.0.0")
+
+
+def with_scheme(url: str) -> str:
+    """Fill in the scheme a person left off.
+
+    https is the right default for the open web, but a dev server on loopback
+    almost never speaks it — forcing https there fails with a bare SSL error
+    instead of loading the page.
+    """
+    url = url.strip()
+    if url.startswith(("http://", "https://")):
+        return url
+    host = url.split("/", 1)[0].split(":", 1)[0]
+    return f"{'http' if host in LOOPBACK_HOSTS else 'https'}://{url}"
+
+
+class FrameSink:
+    """One screencast subscriber.
+
+    Holds at most one pending frame: a newer frame overwrites an unsent older
+    one, so a slow consumer falls behind in *latency* rather than accumulating a
+    backlog. Interactive use makes this matter — every mouse move repaints, and
+    an unbounded queue would leave the preview trailing the cursor by seconds.
+    """
+
+    def __init__(self, on_frame: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
+        self._on_frame = on_frame
+        self._pending: dict[str, Any] | None = None
+        # A strong reference to the in-flight send: a bare create_task() may be
+        # garbage-collected mid-flight, which silently drops frames.
+        self._task: asyncio.Task | None = None
+        self._closed = False
+
+    def offer(self, frame: dict[str, Any]) -> None:
+        if self._closed:
+            return
+        self._pending = frame  # latest wins
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._drain())
+
+    async def _drain(self) -> None:
+        while self._pending is not None and not self._closed:
+            frame, self._pending = self._pending, None
+            try:
+                await self._on_frame(frame)
+            except Exception:
+                return  # e.g. the socket went away; stop feeding this sink
+
+    def close(self) -> None:
+        self._closed = True
+        self._pending = None
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+
+
 class BrowserSession:
     def __init__(self) -> None:
         self._pw = None
-        self.browser: Optional[Browser] = None
-        self.page: Optional[Page] = None
+        self.browser: Browser | None = None
+        self.page: Page | None = None
         self._cdp = None
-        self._frame_listener = None
+        self._sinks: set[FrameSink] = set()
+        self._cdp_listener = None
+        self._acks: set[asyncio.Task] = set()
 
     async def start(self) -> None:
         self._pw = await async_playwright().start()
-        # headless=True -> no OS window pops up; the UI shows a live screencast.
+        # headless=True -> no OS window pops up; the UI shows a live screencast
+        # that the user can also click and type into (see the user_* methods).
         self.browser = await self._pw.chromium.launch(headless=True)
-        ctx = await self.browser.new_context(viewport={"width": 1280, "height": 800})
+        ctx = await self.browser.new_context(
+            viewport=dict(VIEWPORT), locale=BROWSER_LOCALE
+        )
         self.page = await ctx.new_page()
         self._cdp = await ctx.new_cdp_session(self.page)
         await self.page.goto("about:blank")
 
     async def stop(self) -> None:
+        for sink in list(self._sinks):
+            sink.close()
+        self._sinks.clear()
         if self.browser:
             await self.browser.close()
         if self._pw:
@@ -82,15 +164,14 @@ class BrowserSession:
 
     # --- actions -----------------------------------------------------------
     async def go_to_url(self, url: str) -> str:
-        if not url.startswith(("http://", "https://")):
-            url = "https://" + url
+        url = with_scheme(url)
         await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
         await self.page.wait_for_timeout(1000)  # let consent banners render
         dismissed = await self.dismiss_overlays()
         msg = f"Navigated to {self.page.url}"
         return f"{msg}; {dismissed}" if dismissed else msg
 
-    async def dismiss_overlays(self) -> Optional[str]:
+    async def dismiss_overlays(self) -> str | None:
         """Best-effort: accept a cookie/consent dialog so it stops blocking clicks.
 
         Only clicks buttons whose accessible name exactly matches a known
@@ -143,8 +224,32 @@ class BrowserSession:
         text = await self.page.evaluate("() => document.body.innerText")
         return text.strip()[:4000]
 
+    # --- user-driven input (the interactive preview) ------------------------
+    # These take viewport CSS pixels, the same space a screencast frame covers,
+    # so the frontend only has to undo the <img> scaling. They deliberately use
+    # Playwright's mouse/keyboard API rather than the raw CDP Input domain,
+    # which would mean hand-rolling virtual key-code tables.
+    async def user_move(self, x: float, y: float) -> None:
+        await self.page.mouse.move(x, y)
+
+    async def user_click(
+        self, x: float, y: float, button: str = "left", clicks: int = 1
+    ) -> None:
+        if button not in ("left", "middle", "right"):
+            button = "left"
+        await self.page.mouse.click(x, y, button=button, click_count=max(1, clicks))
+
+    async def user_scroll(self, dx: float, dy: float) -> None:
+        await self.page.mouse.wheel(dx, dy)
+
+    async def user_type(self, text: str) -> None:
+        await self.page.keyboard.type(text)
+
+    async def user_key(self, key: str) -> None:
+        await self.page.keyboard.press(key)
+
     # --- observation -------------------------------------------------------
-    async def elements(self) -> List[Dict[str, Any]]:
+    async def elements(self) -> list[dict[str, Any]]:
         try:
             return await self.page.evaluate(COLLECT_JS)
         except Exception:
@@ -158,36 +263,76 @@ class BrowserSession:
         return self.page.url if self.page else "about:blank"
 
     # --- live screencast ---------------------------------------------------
-    async def start_screencast(self, on_frame: Callable[[str], Awaitable[None]]) -> None:
-        """Stream live JPEG frames of the page to `on_frame(base64_str)`.
+    # Chrome DevTools' screencast pushes a JPEG on every visual change without
+    # interfering with page actions. Several clients may watch the same session,
+    # so frames fan out to a set of sinks and the CDP stream itself runs only
+    # while at least one of them is attached.
+    async def add_frame_sink(
+        self, on_frame: Callable[[dict[str, Any]], Awaitable[None]]
+    ) -> FrameSink:
+        """Subscribe to live frames. Each is {"data": b64_jpeg, "meta": {...}}."""
+        sink = FrameSink(on_frame)
+        self._sinks.add(sink)
+        if len(self._sinks) == 1:
+            await self._start_screencast()
+        # CDP only pushes a frame when something repaints, so a subscriber that
+        # joins while the page is idle would see nothing at all until it next
+        # changes. Prime it with the current view so the preview is never blank.
+        sink.offer(
+            {
+                "data": await self.screenshot_b64(),
+                "meta": {"width": VIEWPORT["width"], "height": VIEWPORT["height"]},
+            }
+        )
+        return sink
 
-        Uses Chrome DevTools' screencast, which pushes a frame on every visual
-        change without interfering with the agent's page actions.
-        """
-        async def handle(params: Dict[str, Any]) -> None:
-            try:
-                await on_frame(params["data"])
-            except Exception:
-                pass  # e.g. the socket went away; just drop the frame
-            try:
-                await self._cdp.send(
-                    "Page.screencastFrameAck", {"sessionId": params["sessionId"]}
-                )
-            except Exception:
-                pass
+    async def remove_frame_sink(self, sink: FrameSink) -> None:
+        sink.close()
+        self._sinks.discard(sink)
+        if not self._sinks:
+            await self._stop_screencast()
 
-        self._frame_listener = lambda params: asyncio.create_task(handle(params))
-        self._cdp.on("Page.screencastFrame", self._frame_listener)
+    def _on_cdp_frame(self, params: dict[str, Any]) -> None:
+        # Ack every frame immediately and unconditionally. Chromium throttles
+        # and then stops the screencast if acks dry up, so acking must not be
+        # coupled to whether any client is keeping up with the frames.
+        ack = asyncio.create_task(self._ack(params.get("sessionId")))
+        self._acks.add(ack)
+        ack.add_done_callback(self._acks.discard)
+
+        meta = params.get("metadata") or {}
+        frame = {
+            "data": params["data"],
+            # Width/height let the frontend map a click on the scaled <img>
+            # back to a viewport coordinate without assuming the viewport size.
+            "meta": {
+                "width": meta.get("deviceWidth", VIEWPORT["width"]),
+                "height": meta.get("deviceHeight", VIEWPORT["height"]),
+            },
+        }
+        for sink in list(self._sinks):
+            sink.offer(frame)
+
+    async def _ack(self, session_id: Any) -> None:
+        with contextlib.suppress(Exception):
+            await self._cdp.send("Page.screencastFrameAck", {"sessionId": session_id})
+
+    async def _start_screencast(self) -> None:
+        self._cdp_listener = self._on_cdp_frame
+        self._cdp.on("Page.screencastFrame", self._cdp_listener)
         await self._cdp.send(
             "Page.startScreencast",
-            {"format": "jpeg", "quality": 60, "maxWidth": 1280, "maxHeight": 800},
+            {
+                "format": "jpeg",
+                "quality": 60,
+                "maxWidth": VIEWPORT["width"],
+                "maxHeight": VIEWPORT["height"],
+            },
         )
 
-    async def stop_screencast(self) -> None:
-        try:
+    async def _stop_screencast(self) -> None:
+        with contextlib.suppress(Exception):
             await self._cdp.send("Page.stopScreencast")
-        except Exception:
-            pass
-        if self._frame_listener is not None:
-            self._cdp.remove_listener("Page.screencastFrame", self._frame_listener)
-            self._frame_listener = None
+        if self._cdp_listener is not None:
+            self._cdp.remove_listener("Page.screencastFrame", self._cdp_listener)
+            self._cdp_listener = None

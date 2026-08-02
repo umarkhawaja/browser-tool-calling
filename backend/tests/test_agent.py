@@ -1,5 +1,9 @@
 """Tests for the agent loop. The LLM and the browser are both faked, so these run
 without Ollama or a real Chromium."""
+
+import asyncio
+import contextlib
+
 from app import agent
 from app.agent import _format_state, run_agent
 from app.llm import LLMError
@@ -51,12 +55,21 @@ class FakeBrowser:
         return "Accepted a cookie/consent dialog ('I agree')"
 
 
-def _scripted(replies):
-    """Return a fake chat_tools that hands back the given messages in order."""
+def _scripted(replies, seen=None):
+    """Return a fake chat_tools that hands back the given messages in order.
+
+    `seen`, if given, collects the transcript each call was made with, so tests
+    can assert on what the model was actually told.
+    """
     queue = list(replies)
 
-    async def fake_chat(messages, tools):
-        return queue.pop(0)
+    async def fake_chat(messages, tools, on_token=None):
+        if seen is not None:
+            seen.append(list(messages))
+        reply = queue.pop(0)
+        if on_token is not None and reply.get("content"):
+            await on_token(reply["content"])  # mimic streaming the text out
+        return reply
 
     return fake_chat
 
@@ -77,7 +90,8 @@ def _final(text):
 
 # --- _format_state ---------------------------------------------------------
 def test_format_state_lists_elements():
-    s = _format_state("https://x.com", [{"index": 0, "tag": "a", "type": "", "label": "Home"}])
+    element = {"index": 0, "tag": "a", "type": "", "label": "Home"}
+    s = _format_state("https://x.com", [element])
     assert "Current URL: https://x.com" in s
     assert "[0]" in s
     assert "Home" in s
@@ -89,11 +103,17 @@ def test_format_state_handles_no_elements():
 
 # --- run_agent -------------------------------------------------------------
 async def test_run_agent_executes_tools_then_finishes(monkeypatch):
-    monkeypatch.setattr(agent, "chat_tools", _scripted([
-        _tool_call("go_to_url", {"url": "example.com"}),
-        _tool_call("input_text", {"index": 0, "text": "hello"}),
-        _final("All set"),
-    ]))
+    monkeypatch.setattr(
+        agent,
+        "chat_tools",
+        _scripted(
+            [
+                _tool_call("go_to_url", {"url": "example.com"}),
+                _tool_call("input_text", {"index": 0, "text": "hello"}),
+                _final("All set"),
+            ]
+        ),
+    )
     events = []
 
     async def emit(e):
@@ -113,10 +133,16 @@ async def test_run_agent_executes_tools_then_finishes(monkeypatch):
 
 async def test_run_agent_parses_stringified_arguments(monkeypatch):
     # Some models return tool arguments as a JSON string instead of an object.
-    monkeypatch.setattr(agent, "chat_tools", _scripted([
-        _tool_call("click", '{"index": 3}'),
-        _final("done"),
-    ]))
+    monkeypatch.setattr(
+        agent,
+        "chat_tools",
+        _scripted(
+            [
+                _tool_call("click", '{"index": 3}'),
+                _final("done"),
+            ]
+        ),
+    )
     events = []
 
     async def emit(e):
@@ -130,10 +156,16 @@ async def test_run_agent_parses_stringified_arguments(monkeypatch):
 async def test_run_agent_nudges_on_toolcall_written_as_text(monkeypatch):
     # First reply fumbles a tool call into the message body (no tool_calls);
     # the loop should nudge and continue rather than answer with the JSON.
-    monkeypatch.setattr(agent, "chat_tools", _scripted([
-        _final('{"name": "get_element_text", "parameters": {"index": 0}}'),
-        _final("The heading is Example Domain"),
-    ]))
+    monkeypatch.setattr(
+        agent,
+        "chat_tools",
+        _scripted(
+            [
+                _final('{"name": "get_element_text", "parameters": {"index": 0}}'),
+                _final("The heading is Example Domain"),
+            ]
+        ),
+    )
     events = []
 
     async def emit(e):
@@ -146,7 +178,7 @@ async def test_run_agent_nudges_on_toolcall_written_as_text(monkeypatch):
 
 
 async def test_run_agent_surfaces_llm_error(monkeypatch):
-    async def boom(messages, tools):
+    async def boom(messages, tools, on_token=None):
         raise LLMError("no ollama")
 
     monkeypatch.setattr(agent, "chat_tools", boom)
@@ -160,10 +192,16 @@ async def test_run_agent_surfaces_llm_error(monkeypatch):
 
 
 async def test_run_agent_can_dismiss_dialog(monkeypatch):
-    monkeypatch.setattr(agent, "chat_tools", _scripted([
-        _tool_call("dismiss_dialog", {}),
-        _final("ok"),
-    ]))
+    monkeypatch.setattr(
+        agent,
+        "chat_tools",
+        _scripted(
+            [
+                _tool_call("dismiss_dialog", {}),
+                _final("ok"),
+            ]
+        ),
+    )
     events = []
 
     async def emit(e):
@@ -172,15 +210,23 @@ async def test_run_agent_can_dismiss_dialog(monkeypatch):
     browser = FakeBrowser()
     await run_agent("x", browser, emit)
     assert ("dismiss_overlays",) in browser.calls
-    dismiss = [e for e in events if e["type"] == "action" and e["text"] == "dismiss_dialog"]
+    dismiss = [
+        e for e in events if e["type"] == "action" and e["text"] == "dismiss_dialog"
+    ]
     assert dismiss and "cookie/consent" in dismiss[0]["detail"]
 
 
 async def test_run_agent_handles_unknown_tool(monkeypatch):
-    monkeypatch.setattr(agent, "chat_tools", _scripted([
-        _tool_call("frobnicate", {}),
-        _final("ok"),
-    ]))
+    monkeypatch.setattr(
+        agent,
+        "chat_tools",
+        _scripted(
+            [
+                _tool_call("frobnicate", {}),
+                _final("ok"),
+            ]
+        ),
+    )
     events = []
 
     async def emit(e):
@@ -189,3 +235,98 @@ async def test_run_agent_handles_unknown_tool(monkeypatch):
     await run_agent("x", FakeBrowser(), emit)
     action_events = [e for e in events if e["type"] == "action"]
     assert any("Unknown tool" in e.get("detail", "") for e in action_events)
+
+
+# --- streaming -------------------------------------------------------------
+async def test_run_agent_streams_tokens_before_the_answer(monkeypatch):
+    monkeypatch.setattr(agent, "chat_tools", _scripted([_final("All set")]))
+    events = []
+
+    async def emit(e):
+        events.append(e)
+
+    await run_agent("x", FakeBrowser(), emit)
+
+    kinds = [e["type"] for e in events]
+    assert kinds.index("token") < kinds.index("answer")
+    assert "".join(e["text"] for e in events if e["type"] == "token") == "All set"
+
+
+async def test_nudged_tool_json_tokens_are_discarded(monkeypatch):
+    # The fumbled JSON streams to the UI before we know it isn't an answer, so
+    # the loop must tell the client to throw those tokens away.
+    monkeypatch.setattr(
+        agent,
+        "chat_tools",
+        _scripted(
+            [
+                _final('{"name": "get_element_text", "parameters": {"index": 0}}'),
+                _final("The heading is Example Domain"),
+            ]
+        ),
+    )
+    events = []
+
+    async def emit(e):
+        events.append(e)
+
+    await run_agent("x", FakeBrowser(), emit)
+    kinds = [e["type"] for e in events]
+    assert "token_reset" in kinds
+    assert kinds.index("token_reset") < kinds.index("answer")
+
+
+# --- pause gate ------------------------------------------------------------
+async def test_run_agent_waits_while_the_human_holds_control(monkeypatch):
+    seen = []
+    monkeypatch.setattr(agent, "chat_tools", _scripted([_final("done")], seen))
+    events = []
+
+    async def emit(e):
+        events.append(e)
+
+    gate = asyncio.Event()  # cleared -> the human has taken the browser
+    task = asyncio.create_task(run_agent("x", FakeBrowser(), emit, gate))
+    await asyncio.sleep(0.05)
+
+    assert {"type": "status", "text": "paused"} in events
+    assert seen == [], "the model must not be consulted while paused"
+
+    gate.set()
+    await task
+
+    assert any(e["type"] == "answer" for e in events)
+    # On resume the model is told the page may have moved under it.
+    resumed = seen[-1][-1]
+    assert resumed["role"] == "user"
+    assert "took control" in resumed["content"]
+
+
+async def test_run_agent_runs_straight_through_when_gate_is_set(monkeypatch):
+    monkeypatch.setattr(agent, "chat_tools", _scripted([_final("done")]))
+    events = []
+
+    async def emit(e):
+        events.append(e)
+
+    gate = asyncio.Event()
+    gate.set()
+    await run_agent("x", FakeBrowser(), emit, gate)
+
+    assert not any(e.get("text") == "paused" for e in events)
+    assert any(e["type"] == "answer" for e in events)
+
+
+async def test_stop_works_while_paused(monkeypatch):
+    monkeypatch.setattr(agent, "chat_tools", _scripted([_final("done")]))
+
+    async def emit(e):
+        pass
+
+    gate = asyncio.Event()  # never set
+    task = asyncio.create_task(run_agent("x", FakeBrowser(), emit, gate))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert task.cancelled()

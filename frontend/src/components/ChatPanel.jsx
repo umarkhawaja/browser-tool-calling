@@ -1,118 +1,104 @@
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef } from "react";
+import Composer from "./Composer.jsx";
+import Trace from "./Trace.jsx";
+import { Prose, groupIntoBlocks } from "../lib/transcript.jsx";
 
-const STEP_LABEL = { thought: "thinking", action: "action" };
+const SUGGESTIONS = [
+  "Go to Hacker News and tell me the top story",
+  "What's the weather in Karachi right now?",
+  "Find the Playwright Python docs for locators",
+];
 
-export default function ChatPanel({ messages, onSend, onStop, connected, running }) {
-  const [text, setText] = useState("");
-  const endRef = useRef(null);
-  const taRef = useRef(null);
+const SHORTCUTS = [
+  ["⌘K", "focus the message box"],
+  ["V", "switch to the agent's view"],
+  ["Esc", "hand the browser back"],
+];
 
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, running]);
-
-  function resize() {
-    const ta = taRef.current;
-    if (!ta) return;
-    ta.style.height = "auto";
-    ta.style.height = Math.min(ta.scrollHeight, 140) + "px";
-  }
-
-  function submit() {
-    const t = text.trim();
-    if (!t) return;
-    onSend(t);
-    setText("");
-    requestAnimationFrame(resize);
-  }
-
-  function onKeyDown(e) {
-    // Enter sends; Shift+Enter inserts a newline.
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      submit();
-    }
-  }
-
+function Opening({ onPick }) {
   return (
-    <aside className="chat">
-      <header className="chat-header">
-        <span className="title">Browser Agent</span>
-        <span
-          className={`dot ${connected ? "on" : "off"}`}
-          title={connected ? "connected" : "disconnected"}
-        />
-      </header>
-
-      <div className="messages">
-        {messages.length === 0 && (
-          <p className="hint">
-            Chat with the agent, or ask it to do something on the web — e.g.{" "}
-            <em>"Search Hacker News for the top AI story."</em>
-          </p>
-        )}
-        {messages.map((m, i) => (
-          <Message key={i} m={m} />
+    <div className="opening">
+      <p>
+        Ask for something on the web and the agent opens a browser to do it.
+        Ask anything else and it just answers.
+      </p>
+      <div className="suggestions">
+        {SUGGESTIONS.map((suggestion) => (
+          <button key={suggestion} type="button" onClick={() => onPick(suggestion)}>
+            {suggestion}
+          </button>
         ))}
-        {running && (
-          <div className="step">
-            <span className="spinner" /> working…
-          </div>
-        )}
-        <div ref={endRef} />
       </div>
-
-      <form
-        className="composer"
-        onSubmit={(e) => {
-          e.preventDefault();
-          submit();
-        }}
-      >
-        <textarea
-          ref={taRef}
-          rows={1}
-          value={text}
-          onChange={(e) => {
-            setText(e.target.value);
-            resize();
-          }}
-          onKeyDown={onKeyDown}
-          placeholder="Message the agent…  (Enter to send, Shift+Enter for a new line)"
-        />
-        {running ? (
-          <button type="button" className="stop" onClick={onStop}>
-            Stop
-          </button>
-        ) : (
-          <button type="submit" disabled={!text.trim()}>
-            Send
-          </button>
-        )}
-      </form>
-    </aside>
+      <div className="shortcuts">
+        {SHORTCUTS.map(([key, meaning]) => (
+          <div className="shortcut" key={key}>
+            <kbd>{key}</kbd> {meaning}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
-/** One chat entry. Thoughts/actions render as compact muted step lines. */
-function Message({ m }) {
-  if (m.kind === "thought" || m.kind === "action") {
-    return (
-      <div className={`step ${m.kind}`}>
-        <span className="step-tag">{STEP_LABEL[m.kind]}</span>
-        <span className="step-text">
-          {m.text}
-          {m.detail ? ` — ${m.detail}` : ""}
-        </span>
-      </div>
-    );
+function Block({ block }) {
+  switch (block.kind) {
+    case "trace":
+      return <Trace items={block.items} />;
+    case "you":
+      return <div className="you-said">{block.text}</div>;
+    case "note":
+      return <p className="note">{block.text}</p>;
+    case "error":
+      return <div className="error"><Prose text={block.text} /></div>;
+    default:
+      return <div className="answer"><Prose text={block.text} /></div>;
   }
-  if (m.kind === "note") {
-    return <div className="note">{m.text}</div>;
-  }
+}
+
+export default function ChatPanel({ entries, streaming, onSend, onStop, running, paused }) {
+  const bottom = useRef(null);
+  const composer = useRef(null);
+
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ behavior: "smooth" });
+  }, [entries, streaming, running]);
+
+  const blocks = groupIntoBlocks(entries);
+  const isEmpty = blocks.length === 0 && !streaming;
+
   return (
-    <div className={`msg ${m.role} ${m.kind}`}>
-      <div className="bubble">{m.text}</div>
-    </div>
+    <aside className="rail">
+      <div className="rail-head">
+        <span className="label">Transcript</span>
+        {running && (
+          <span className={`label ${paused ? "label-paused" : "label-working"}`}>
+            {paused ? "Paused" : "Working"}
+          </span>
+        )}
+      </div>
+
+      <div className="transcript">
+        {isEmpty && <Opening onPick={onSend} />}
+        {blocks.map((block, i) => <Block block={block} key={i} />)}
+
+        {/* The answer as it arrives, replaced by the settled message when the
+            backend sends the authoritative version. */}
+        {streaming && (
+          <div className="answer streaming">
+            <Prose text={streaming} />
+            <span className="caret" />
+          </div>
+        )}
+        {running && !streaming && (
+          <p className="working">
+            <span className="spinner" />
+            {paused ? "paused — the browser is yours" : "thinking"}
+          </p>
+        )}
+        <div ref={bottom} />
+      </div>
+
+      <Composer ref={composer} onSend={onSend} onStop={onStop} running={running} />
+    </aside>
   );
 }

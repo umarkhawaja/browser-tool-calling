@@ -19,6 +19,7 @@ dev = [
     "pytest==8.4.2",
     "pytest-asyncio==1.2.0",
     "respx==0.23.1",
+    "ruff==0.14.6",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -27,3 +28,28 @@ packages = ["app"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 90
+target-version = "py39"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # import sorting
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "SIM",      # simplify
+    "RUF",      # ruff-specific
+]
+ignore = [
+    # This project handles non-Latin text on purpose: the router's few-shot
+    # examples and the routing eval are written in the scripts and punctuation
+    # they would really arrive in. Flagging those characters is noise.
+    "RUF001", "RUF002", "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests reach into private helpers on purpose, and fakes mirror real signatures.
+"tests/*" = ["SLF001", "ARG002"]
