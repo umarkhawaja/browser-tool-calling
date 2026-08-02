@@ -6,9 +6,12 @@ call** and how commands are recognized.
 
 ## 1. The big picture
 
-Everything talks over **one WebSocket**. The frontend sends `{message}` or
-`{stop}`; the backend streams back typed events (`screenshot`, `thought`,
-`action`, `answer`, `note`, `error`, `status`).
+Everything talks over **one WebSocket**. The frontend sends `{message}`,
+`{stop}`, `{control}` (take/return the browser), `{input}` (your clicks and
+keystrokes for the preview) or `{navigate}`; the backend streams back typed
+events (`hello`, `screenshot`, `page`, `token`, `token_reset`, `thought`,
+`action`, `answer`, `note`, `error`, `status`). The docstring at the top of
+`main.py` is the authoritative spec.
 
 ```
 ┌─────────────── FRONTEND (React) ───────────────┐        ┌───────────── BACKEND (Python) ─────────────┐
@@ -23,14 +26,15 @@ Everything talks over **one WebSocket**. The frontend sends `{message}` or
 
 | File | Role |
 |------|------|
-| [`frontend/src/hooks/useAgentSocket.js`](../frontend/src/hooks/useAgentSocket.js) | Owns the WebSocket: sends messages, collects events, exposes `send()` / `stop()` |
-| [`frontend/src/components/ChatPanel.jsx`](../frontend/src/components/ChatPanel.jsx) | Chat side panel (input, message list, Stop button) |
-| [`frontend/src/components/PreviewWindow.jsx`](../frontend/src/components/PreviewWindow.jsx) | Renders the live browser frames |
+| [`frontend/src/hooks/useAgentSocket.js`](../frontend/src/hooks/useAgentSocket.js) | Owns the WebSocket: sends messages, collects events, exposes `send()` / `stop()` / `takeControl()` / `sendInput()` |
+| [`frontend/src/components/TopBar.jsx`](../frontend/src/components/TopBar.jsx) | Model, step budget, connection state |
+| [`frontend/src/components/ChatPanel.jsx`](../frontend/src/components/ChatPanel.jsx) | Transcript, the step trace, and the composer |
+| [`frontend/src/components/PreviewWindow.jsx`](../frontend/src/components/PreviewWindow.jsx) | Address bar, live frames, the agent view, and input forwarding when you take control |
 | [`backend/app/main.py`](../backend/app/main.py) | FastAPI app + the `/ws` WebSocket handler |
 | [`backend/app/router.py`](../backend/app/router.py) | Decides chat vs. browse |
 | [`backend/app/agent.py`](../backend/app/agent.py) | The think → act → observe loop + the system prompt |
 | [`backend/app/browser.py`](../backend/app/browser.py) | Playwright wrapper: actions, element listing, screencast, cookie handling |
-| [`backend/app/llm.py`](../backend/app/llm.py) | Thin Ollama client: `chat_json` (router) + `chat_tools` (native tool calling) |
+| [`backend/app/llm.py`](../backend/app/llm.py) | Thin Ollama client: `chat_json` (router), `chat_text` and `chat_tools` (streaming, native tool calling) |
 | [`backend/app/config.py`](../backend/app/config.py) | Env-based configuration |
 
 ## 2. Following one message end-to-end
@@ -40,12 +44,14 @@ Say you type *"check top stories on bbc"*:
 1. **`useAgentSocket.js`** adds your bubble and sends
    `{"message": "check top stories on bbc"}` over the socket.
 2. **`main.py`** `ws()` receives it and calls `route()`.
-3. **`router.py`** decides *browse* (the word "bbc" + "top stories" trips the
-   guardrail). If it were "hi", it would return a `chat` reply and stop here.
-4. `main.py` starts the screencast and calls **`run_agent(...)`** in **`agent.py`**.
+3. **`router.py`** asks a small classifier model, which returns *browse*. If it
+   were "hi", it would return *chat* and `chat_reply()` would stream a sentence
+   back, without ever opening a browser.
+4. `main.py` starts the browser (and its live preview, if not already running)
+   and calls **`run_agent(...)`** in **`agent.py`**.
 5. The agent loops: ask llama3 **which tool to call** → run it in **`browser.py`**
    → feed the result + new page state back → repeat, streaming
-   `thought` / `action` / `screenshot` events the whole time.
+   `token` / `thought` / `action` / `screenshot` events the whole time.
 6. When the model replies with a plain-text answer (no tool call), `main.py`
    sends `status: idle`.
 
@@ -103,6 +109,14 @@ Crucial insight: **the model never sees the screenshot.** The preview image is
 for the human. The model navigates purely from this text list — it reads
 `[8] News` and calls `click(index=8)`.
 
+You can see this directly: press **V** in the UI and the preview switches to the
+*agent view*, drawing that numbered list back onto the page. It shows exactly the
+elements the model was handed and no others — both the listing and the overlay
+cut at `MODEL_ELEMENT_LIMIT` (60), so the picture can never imply the agent is
+able to click something it was never told about. On a page with more than sixty
+interactive elements the remainder is genuinely unreachable, and the status strip
+says how many were dropped.
+
 ### Step 4 — the dispatch
 
 `_execute(browser, name, args)` in `agent.py` maps the tool name to a
@@ -158,17 +172,47 @@ running until the model answers in plain text or hits `MAX_STEPS` (15). The
 ## 4. How it recognizes commands (chat vs. browse)
 
 Before the agent ever runs, `router.py` decides whether your message even
-*needs* the browser. Two stages:
+*needs* the browser. A small classifier model reads it and returns
+`{"mode":"chat"}` or `{"mode":"browse"}` — nothing else. So "hi" → chat reply
+(no browser); "top stories on bbc" → browse (runs the agent).
 
-- **Deterministic guardrail** — `_looks_like_browse()` checks for a URL or
-  high-signal words (`search`, `latest`, `top stories`, `summary of`, a
-  `.com`…). If it matches, it is *browse* immediately, with no model call.
-- **LLM classifier** — anything ambiguous goes to llama3 with a prompt that
-  returns `{"mode":"chat","reply":"..."}` or `{"mode":"browse"}`, biased toward
-  browse and forbidden from fabricating.
+Classifying and answering are two separate calls. The classifier returns *only*
+a mode, which keeps it short and cheap and stops it from trying to answer inside
+a JSON field; `chat_reply()` then streams the actual sentence back as plain
+text. Because classification is such a small job, it can run on a smaller model
+than the agent — set `ROUTER_MODEL`.
 
-So "hi" → chat reply (no browser); "top stories on bbc" → browse (runs the
-agent).
+### Why not just match keywords?
+
+That is what this used to do, and it was wrong in both directions at once:
+
+```
+"how are you today?"              → browse   (matched "today")
+"I need to find myself a hobby"   → browse   (matched "find ")
+"my email is john.doe@gmail.com"  → browse   (matched the domain pattern)
+"busca las últimas noticias"      → no match (the list is English-only)
+"今日のトップニュースは？"          → no match
+```
+
+Worse, a keyword hit *short-circuited* — those first three never reached a model
+at all, so nothing downstream could recover. Whether a message needs the web is
+a judgement about meaning, in whatever language it was written, and that is a
+model's job. The classifier gets few-shot examples in several scripts, and a
+handful of them exist purely to nail down the cases above.
+
+`tools/routing_eval.py` scores the classifier against a labelled multilingual
+set so prompt changes can be measured rather than guessed at.
+
+### When routing gets it wrong
+
+It still does, occasionally — and a miss towards *chat* is the dangerous one,
+because nothing will go and check. So `CHAT_PROMPT` is written as a backstop: it
+forbids stating any outside-world fact, and forbids writing as though it had
+browsed. That matters more than it sounds. With only a mild "don't fabricate"
+instruction, the model answered *"the current price of Bitcoin on Coinbase is
+$43,919"* — a number it made up entirely — and elsewhere narrated *"let me just
+browse the web real quick... (pausing to search)"* without ever opening a page.
+Under the strict rules it says it hasn't looked, and offers to.
 
 ## 5. The clever bit: clicking by index, not by guessing selectors
 
@@ -193,8 +237,51 @@ that exact node.
 - **Live preview** — `browser.py` starts a **CDP screencast**; Chromium pushes
   JPEG frames on every visual change, which `main.py` forwards as `screenshot`
   events. That is why you see the page live without a window popping up.
-- **Stop** — a browse run is an `asyncio.Task`; `{stop}` calls `.cancel()` on it,
-  which raises `CancelledError` inside the loop and unwinds cleanly.
+  Frames fan out to a set of subscribers, each keeping only the newest pending
+  frame, and a new subscriber is primed with a snapshot — CDP emits nothing while
+  a page sits still, so otherwise you would join to a blank pane.
+- **Stop** — a turn is an `asyncio.Task`; `{stop}` calls `.cancel()` on it,
+  which raises `CancelledError` inside the loop and unwinds cleanly. It works
+  while the agent is paused too.
+
+## 6b. Taking the wheel
+
+The preview is interactive. `{"control": "user"}` clears an `asyncio.Event` that
+the agent loop awaits at the top of every iteration, so it pauses at the next
+**step boundary** — a tool call already in flight finishes first. While it waits,
+`{"input": ...}` events carry your mouse and keyboard straight to the page:
+
+```
+click in the <img>  ──▶  scale by (frame width / rendered width)
+                    ──▶  {"kind":"click","x":640,"y":400}  ──WebSocket──▶
+                    ──▶  page.mouse.click(640, 400)        ──▶  Chromium
+```
+
+The frame is captured at the viewport size and then scaled by CSS, so undoing
+that scale is the whole coordinate mapping — no scroll offset is involved,
+because the screencast captures the viewport and Playwright's mouse coordinates
+are viewport-relative too.
+
+Input uses Playwright's `page.mouse` / `page.keyboard` rather than the raw CDP
+`Input` domain, which would mean hand-rolling virtual key-code tables. Playwright
+key names match `event.key`, so single characters become `type` and everything
+else (`Enter`, `Backspace`, `Control+a`) becomes a named press.
+
+When you hand control back, the loop appends a message telling the model the
+human may have changed the page, along with a fresh observation — otherwise it
+would keep reasoning from a transcript that no longer matches reality.
+
+## 6c. Why the model's text appears as it is typed
+
+Every model call streams (`stream: true`). `llm.py` reassembles Ollama's NDJSON
+chunks into the *same* single message dict a non-streaming call returns, so the
+agent loop never learns the reply arrived in pieces — it just gets an extra
+`on_token` callback that emits `token` events. Ollama sends each tool call whole
+in one chunk (arguments already a dict), so there is nothing to stitch there.
+
+The client shows `token` deltas in a provisional bubble and replaces it the
+moment the authoritative `answer`/`thought`/`action` arrives, so nothing is ever
+rendered twice.
 
 ## 7. The honest caveat
 
@@ -206,3 +293,8 @@ text (which is why the `_looks_like_tool_json` nudge exists). The guardrails —
 typed tool schemas, indexed elements, the nudge, cookie handling, a step cap, and
 Stop — exist precisely to keep that fallibility contained. That is the trade-off
 for running fully local.
+
+The last guardrail is you. **Take control** turns the model's weakest moments —
+a login form, a CAPTCHA, a date picker it cannot parse — from a dead end into a
+two-second intervention: do the bit it cannot, hand the page back, and let it
+carry on from there.

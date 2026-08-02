@@ -17,16 +17,17 @@ through the WebSocket, into the agent loop and the browser, and back to the UI.
 | Layer | File | Responsibility |
 |-------|------|----------------|
 | UI entry | [`frontend/src/main.jsx`](../frontend/src/main.jsx) | Mounts `<App/>` into the DOM |
-| UI shell | [`frontend/src/App.jsx`](../frontend/src/App.jsx) | Wires the socket hook to the two panels |
+| UI shell | [`frontend/src/App.jsx`](../frontend/src/App.jsx) | Wires the socket hook to the topbar and two panels |
+| Header | [`frontend/src/components/TopBar.jsx`](../frontend/src/components/TopBar.jsx) | Model, step budget, connection state |
 | Networking | [`frontend/src/hooks/useAgentSocket.js`](../frontend/src/hooks/useAgentSocket.js) | The WebSocket client + all UI state |
 | Chat UI | [`frontend/src/components/ChatPanel.jsx`](../frontend/src/components/ChatPanel.jsx) | Input box, message list, Stop button |
-| Preview UI | [`frontend/src/components/PreviewWindow.jsx`](../frontend/src/components/PreviewWindow.jsx) | Renders live browser frames |
+| Preview UI | [`frontend/src/components/PreviewWindow.jsx`](../frontend/src/components/PreviewWindow.jsx) | Renders live browser frames; forwards your input when you take control |
 | Server | [`backend/app/main.py`](../backend/app/main.py) | FastAPI app + `/ws` handler + orchestration |
 | Router | [`backend/app/router.py`](../backend/app/router.py) | Chat reply vs. drive-the-browser decision |
 | Agent | [`backend/app/agent.py`](../backend/app/agent.py) | The think → act → observe loop |
 | Browser | [`backend/app/browser.py`](../backend/app/browser.py) | Playwright actions, element listing, screencast, cookies |
-| LLM | [`backend/app/llm.py`](../backend/app/llm.py) | Calls Ollama, returns parsed JSON |
-| Config | [`backend/app/config.py`](../backend/app/config.py) | Env-based settings (`MODEL`, `MAX_STEPS`, …) |
+| LLM | [`backend/app/llm.py`](../backend/app/llm.py) | Calls Ollama; streams replies and reassembles them |
+| Config | [`backend/app/config.py`](../backend/app/config.py) | Env-based settings (`MODEL`, `ROUTER_MODEL`, `MAX_STEPS`, …) |
 
 ---
 
@@ -37,14 +38,21 @@ through the WebSocket, into the agent loop and the browser, and back to the UI.
 | Message | Meaning |
 |---------|---------|
 | `{"message": "..."}` | A user chat message |
-| `{"stop": true}` | Cancel the running browser task |
+| `{"stop": true}` | Cancel the running turn |
+| `{"control": "user"\|"agent"}` | Take the browser, or hand it back |
+| `{"navigate": "url"}` | Open an address yourself, while you hold control |
+| `{"input": {...}}` | Mouse/keyboard for the preview, while you hold control |
 
 **Server → client** (JSON, each has a `type`):
 
 | Event | Fields | UI effect |
 |-------|--------|-----------|
-| `screenshot` | `data` (base64 JPEG) | Update the preview image |
-| `status` | `text`: `running`/`idle` | Toggle Stop button + spinner |
+| `hello` | `model`, `max_steps` | Label the model, size the budget meter |
+| `screenshot` | `data` (base64 JPEG), `meta` | Update the preview image |
+| `page` | `url`, `elements`, `total` | Address bar + the agent-view overlay |
+| `token` | `text` | Append to the reply being streamed |
+| `token_reset` | — | Discard what was streamed so far |
+| `status` | `text`: `running`/`paused`/`idle` | Toggle Stop button + spinner |
 | `thought` | `text` | Muted "thinking" step line |
 | `action` | `text`, `detail` | Muted "action" step line |
 | `answer` | `text` | Prominent reply bubble |
@@ -72,31 +80,34 @@ Example: the user types **"check top stories on bbc"** and presses Enter.
 ### Phase B — Backend decides chat vs. browse
 
 4. **`main.ws(sock)`** — its `while True` loop does `await sock.receive_json()`
-   and gets `{"message": "check top stories on bbc"}`. It's not a `stop`, so it
-   extracts `text` and calls `route(text)`.
-5. **`router.route(text)`** — first runs **`router._looks_like_browse(text)`**, a
-   deterministic check for a URL or high-signal words ("top stor", "bbc" domain…).
-   Here it matches → returns `{"mode": "browse", "reply": ""}` **without calling
-   the model**. (For "hi" it would fall through to a quick llama3 classification.)
-6. **`main.ws`** — sees `mode == "browse"`, confirms no run is already active,
-   then `run = asyncio.create_task(do_browse(text))`. The receive loop keeps
-   running, so `stop` and chat still work while the task executes.
+   and gets `{"message": "check top stories on bbc"}`. It is not a `stop`,
+   `control` or `input` message, so it extracts `text`, confirms no turn is
+   already active, and does `turn = asyncio.create_task(do_turn(text))`.
+   Routing itself calls the model, so it happens *inside* the task — the receive
+   loop has to stay free to service Stop and preview input meanwhile.
+5. **`router.route(text)`** — asks a small classifier model, with few-shot
+   examples in several languages, for one word. Here it returns
+   `{"mode": "browse"}`. (For "hi" it returns `chat`, and `chat_reply()` then
+   streams the answer back token by token.) It runs on `ROUTER_MODEL`, which
+   defaults to the agent's model but can point at something smaller.
+6. **`main.do_turn`** — sees `mode == "browse"` and continues into Phase C.
 
 ### Phase C — The browse task starts
 
-7. **`main.do_browse(task)`** (inner coroutine of `ws`):
-   - `sock.send_json({"type":"status","text":"running"})` → UI shows the spinner.
-   - `browser = await get_browser()` — **`main.get_browser()`** lazily constructs
-     one shared `BrowserSession` and calls **`BrowserSession.start()`** on first
-     use (launches headless Chromium, opens a page, attaches a CDP session).
-   - `await browser.start_screencast(on_frame)` — begins the live video stream
-     (see §5). `on_frame` forwards each frame as a `screenshot` event.
-   - `await run_agent(task, browser, sock.send_json)` — hands control to the
-     agent loop, passing `sock.send_json` as the `emit` callback.
+7. **`main.do_turn(task)`** (inner coroutine of `ws`, run as a task so the
+   receive loop stays free for Stop and preview input):
+   - `send({"type":"status","text":"running"})` → UI shows the spinner.
+   - `await ensure_browser()` — **`main.get_browser()`** lazily constructs one
+     shared `BrowserSession` and calls **`BrowserSession.start()`** on first use
+     (launches headless Chromium, opens a page, attaches a CDP session), then
+     `add_frame_sink(send_frame)` subscribes this connection to the live stream
+     (see §5). The subscription lasts for the whole connection, not just the run.
+   - `await run_agent(task, browser, send, gate)` — hands control to the agent
+     loop, passing `send` as the `emit` callback and the pause `gate` (see §5).
 
 ### Phase D — The agent loop (the heart)
 
-8. **`agent.run_agent(task, browser, emit)`** seeds the conversation:
+8. **`agent.run_agent(task, browser, emit, gate)`** seeds the conversation:
    ```python
    messages = [
      {"role":"system", "content": SYSTEM_PROMPT},
@@ -111,9 +122,11 @@ Example: the user types **"check top stories on bbc"** and presses Enter.
       - **`agent.TOOLS`** is the list of Ollama function schemas (one per action:
         `go_to_url`, `click`, `input_text`, `press_enter`, `scroll`,
         `extract_text`, `dismiss_dialog`).
-      - **`llm.chat_tools(messages, tools)`** POSTs to Ollama `/api/chat` with the
-        `tools` field, `stream:false`, `temperature:0.1`, `num_ctx:8192`, and
-        returns the raw assistant message. Raises `LLMError` if Ollama is down.
+      - **`llm.chat_tools(messages, tools, on_token)`** POSTs to Ollama
+        `/api/chat` with the `tools` field, `stream:true`, `temperature:0.1` and
+        `num_ctx:8192`, reassembles the NDJSON chunks into one assistant message,
+        and reports each text delta to `on_token` (→ `token` events). Raises
+        `LLMError` if Ollama is down.
    2. **Append** that assistant message to `messages`.
    3. **Finish check** — if the message has **no `tool_calls`**, the model is done:
       `emit({"type":"answer", "text": content})` and **return**.
@@ -154,10 +167,11 @@ Example: the user types **"check top stories on bbc"** and presses Enter.
 
 ### Phase F — The task ends
 
-10. When `run_agent` returns (a `done` answer or step-limit), **`do_browse`**'s
-    `finally` runs `browser.stop_screencast()` and
-    `sock.send_json({"type":"status","text":"idle"})` → the UI drops the spinner
-    and restores the Send button.
+10. When `run_agent` returns (a `done` answer or step-limit), **`do_turn`**'s
+    `finally` sends `{"type":"status","text":"idle"}` → the UI drops the spinner
+    and restores the Send button. The screencast keeps running: it is released
+    only when the connection closes, so you can still click around between
+    tasks.
 
 ---
 
@@ -169,12 +183,12 @@ User      ChatPanel        useAgentSocket        main.ws          router     age
  │──────────►│ submit()           │                  │               │              │              │              │
  │           │──onSend(text)─────►│ send()           │               │              │              │              │
  │           │                    │─rawSend {message}►│ receive_json  │              │              │              │
- │           │                    │                  │─route(text)──►│ (guardrail)  │              │              │
+ │           │                    │                  │─route(text)──►│ (classifier) │              │              │
  │           │                    │                  │◄─{browse}─────│              │              │              │
- │           │                    │                  │─create_task(do_browse)       │              │              │
+ │           │                    │                  │─create_task(do_turn)       │              │              │
  │           │                    │◄─status:running──│                              │              │              │
- │           │                    │                  │─start_screencast────────────────────────►│              │
- │           │                    │                  │─run_agent(task, browser, emit)──────────►│              │
+ │           │                    │                  │─add_frame_sink──────────────────────────►│              │
+ │           │                    │                  │─run_agent(task, browser, emit, gate)────►│              │
  │           │                    │                  │              LOOP:            │              │              │
  │           │                    │                  │              │─chat_tools(messages, TOOLS)─────────────►│
  │           │                    │                  │              │◄──tool_calls:[click{index:8}]────────────│
@@ -199,12 +213,32 @@ The number the model reasons about and the DOM attribute are identical — so th
 model points at a number instead of inventing a CSS/XPath selector.
 
 ### Live preview via CDP screencast
-**`BrowserSession.start_screencast(on_frame)`** issues the DevTools command
-`Page.startScreencast` and registers a listener. Chromium then pushes a
-`Page.screencastFrame` event on every visual change; the handler calls
-`on_frame(data)` (→ a `screenshot` WS event) and acks with
-`Page.screencastFrameAck`. That's why the page renders live in the panel with **no
-OS window** — it's a JPEG stream, not a visible browser.
+**`BrowserSession.add_frame_sink(on_frame)`** registers a subscriber and, on the
+first one, issues the DevTools command `Page.startScreencast`. Chromium then
+pushes a `Page.screencastFrame` event on every visual change; the handler acks it
+with `Page.screencastFrameAck` and fans the frame out to every sink (→ a
+`screenshot` WS event each). That's why the page renders live in the panel with
+**no OS window** — it's a JPEG stream, not a visible browser.
+
+Three details that are easy to get wrong:
+
+- **Ack unconditionally.** Chromium throttles and then stops the screencast if
+  acks dry up, so acking must never depend on a client keeping up.
+- **Newest frame wins.** Each `FrameSink` holds at most one pending frame, so a
+  slow client falls behind in latency rather than building a backlog — important
+  once mouse movement is repainting the page continuously.
+- **Prime new subscribers.** CDP emits nothing while a page sits still, so
+  `add_frame_sink` pushes a `screenshot_b64()` snapshot immediately; otherwise a
+  client joining an idle page would see a blank pane until something moved.
+
+### Taking control of the page
+`{"control":"user"}` clears an `asyncio.Event` that `run_agent` awaits at the top
+of each iteration, pausing the agent at the next **step boundary**. `{"input":…}`
+events then reach **`BrowserSession.user_click/user_type/user_scroll/…`**, which
+dispatch through Playwright's `page.mouse` / `page.keyboard` at viewport
+coordinates — the same space a screencast frame covers, so the frontend only has
+to undo the `<img>` scaling. Handing control back appends a message telling the
+model the page may have changed underneath it, plus a fresh observation.
 
 ### Cookie/consent handling
 **`BrowserSession.dismiss_overlays()`** scans every frame for a button whose
@@ -221,9 +255,9 @@ action.
 - **One shared browser.** `main.get_browser()` guards a module-level
   `BrowserSession` with an `asyncio.Lock`; it starts headless Chromium lazily on
   the first browse, so plain chat never opens a browser.
-- **Runs are cancellable tasks.** A browse is `asyncio.create_task(do_browse)`.
+- **Runs are cancellable tasks.** A browse is `asyncio.create_task(do_turn)`.
   `{"stop": true}` calls `run.cancel()`, which raises `CancelledError` inside the
-  loop; `do_browse` catches it, emits a `note`, and cleans up in `finally`.
+  loop; `do_turn` catches it, emits a `note`, and cleans up in `finally`.
 - **The socket stays responsive.** Because the run is a background task, the
   `ws()` receive loop continues handling `stop` and chat messages mid-run.
 - **One run at a time.** A second browse while one is active returns a `note`
@@ -249,8 +283,8 @@ action.
 **Backend**
 - `main.get_browser()` — lazy singleton `BrowserSession`.
 - `main.lifespan(app)` — closes the browser on shutdown.
-- `main.ws(sock)` — the WebSocket loop; inner `do_browse(task)` orchestrates a run.
-- `router.route(message)` → `{mode, reply}`; `router._looks_like_browse(message)` — deterministic guardrail.
+- `main.ws(sock)` — the WebSocket loop; inner `do_turn(task)` orchestrates a chat reply or a browse run.
+- `router.route(message)` → `{mode}` — LLM classifier; `router.chat_reply(message, on_token)` — streams a chat answer.
 - `agent.run_agent(task, browser, emit)` — the tool-calling loop; `agent.TOOLS` — the function schemas; `agent._format_state(url, elements)`; `agent._observe(browser)`; `agent._execute(browser, name, args)`; `agent._parse_args(raw)`; `agent._looks_like_tool_json(content)`.
 - `llm.chat_tools(messages, tools)` — Ollama call with `tools` → assistant message with `tool_calls` (raises `LLMError`).
 - `llm.chat_json(messages)` — Ollama call in JSON mode → parsed dict; used by the router.
@@ -258,7 +292,8 @@ action.
   - lifecycle: `start()`, `stop()`
   - actions: `go_to_url(url)`, `click(index)`, `input_text(index,text)`, `press_enter()`, `scroll(direction)`, `extract_text()`, `dismiss_overlays()`
   - observation: `elements()`, `screenshot_b64()`, `url()`
-  - live view: `start_screencast(on_frame)`, `stop_screencast()`
+  - live view: `add_frame_sink(on_frame)`, `remove_frame_sink(sink)`
+  - human input: `user_click()`, `user_type()`, `user_key()`, `user_scroll()`, `user_move()`
 
 ---
 
@@ -275,7 +310,7 @@ action.
    makes it an agent; state accumulates in the `messages` array.
 4. **Everything is one WebSocket** with a tiny typed event protocol — easy to
    reason about and extend.
-5. **Guardrails contain a small local model's fallibility:** deterministic router,
+5. **Guardrails contain a small local model's fallibility:** a routing classifier,
    typed tool schemas, a nudge when it writes a call as text
    (`_looks_like_tool_json`), index-based clicking, auto-cookie handling, a
    15-step cap, and Stop.
