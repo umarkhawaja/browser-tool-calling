@@ -19,3 +19,18 @@ BROWSER_LOCALE = os.environ.get("BROWSER_LOCALE", "en-US")
 
 # Safety cap on how many actions the agent may take for a single task.
 MAX_STEPS = int(os.environ.get("MAX_STEPS", "15"))
+
+# Origins allowed to open the WebSocket, comma-separated. A handshake is not
+# subject to the same-origin policy — a browser sends `Origin` and then connects
+# anyway — so without this list any page you happen to have open could drive the
+# agent. The default is the dev frontend, and it follows FRONTEND_PORT so that
+# `FRONTEND_PORT=6000 ./dev.sh` needs nothing else set.
+_DEV_ORIGINS = ",".join(
+    f"http://{host}:{os.environ.get('FRONTEND_PORT', '5173')}"
+    for host in ("localhost", "127.0.0.1")
+)
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("ALLOWED_ORIGINS", _DEV_ORIGINS).split(",")
+    if origin.strip()
+]

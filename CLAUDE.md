@@ -266,9 +266,17 @@ development* above — the failing test comes first.
 ## Configuration
 
 Env vars (`backend/app/config.py`, read once at import): `MODEL`, `OLLAMA_URL`,
-`MAX_STEPS`, plus `BACKEND_PORT` for the scripts. The frontend defaults to
-`ws://localhost:8008/ws`, overridable with `VITE_WS_URL`. Changing the port
-means setting both `BACKEND_PORT` and `VITE_WS_URL`.
+`MAX_STEPS`, `ALLOWED_ORIGINS`, plus `BACKEND_PORT` for the scripts. The frontend
+defaults to `ws://localhost:8008/ws`, overridable with `VITE_WS_URL`. Changing
+the port means setting both `BACKEND_PORT` and `VITE_WS_URL`.
+
+`ALLOWED_ORIGINS` guards the socket itself: a WebSocket handshake is exempt from
+the same-origin policy, so `ws()` refuses one carrying an unrecognised `Origin`
+before `accept()`, with a 403 rather than a bare close frame so the reason shows
+up in a browser console. Its default follows `FRONTEND_PORT`, which is what
+keeps `FRONTEND_PORT=6000 ./dev.sh` working with nothing else set. An absent
+`Origin` is allowed: browsers always send one, so its absence means a
+non-browser client, not the drive-by page this closes off.
 
 ## Code shape
 

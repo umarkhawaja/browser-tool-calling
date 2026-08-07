@@ -1,5 +1,8 @@
 """FastAPI app exposing a single WebSocket the React frontend talks to.
 
+A handshake carrying an `Origin` outside `ALLOWED_ORIGINS` is refused with a 403
+before it is accepted, so only the frontend can drive the agent.
+
 Protocol
 --------
 Client -> server:
@@ -41,10 +44,11 @@ from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 
 from app.agent import observe, run_agent
 from app.browser import BrowserSession, FrameSink
-from app.config import MAX_STEPS, MODEL
+from app.config import ALLOWED_ORIGINS, MAX_STEPS, MODEL
 from app.llm import LLMError
 from app.router import chat_reply, route
 
@@ -76,7 +80,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Local Browser Agent", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -233,6 +237,18 @@ class Connection:
 
 @app.websocket("/ws")
 async def ws(sock: WebSocket) -> None:
+    # Answering the handshake with a 403 instead of accepting it means a page on
+    # another origin never reaches the dispatch loop — and says why, where a bare
+    # close frame would leave a blank "connection failed" in its console. A
+    # missing Origin is a non-browser client (curl, a script, the tests) rather
+    # than the drive-by page this guards against: browsers always send one.
+    origin = sock.headers.get("origin")
+    if origin is not None and origin not in ALLOWED_ORIGINS:
+        await sock.send_denial_response(
+            PlainTextResponse(f"Origin {origin} is not allowed.", status_code=403)
+        )
+        return
+
     await sock.accept()
     conn = Connection(sock)
 
