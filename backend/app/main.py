@@ -21,8 +21,12 @@ Server -> client:  a stream of events, each a JSON object with a "type":
     {"type": "screenshot",  "data": "<base64 jpeg>", "meta": {"width": w, "height": h}}
     {"type": "page",        "url": "...", "elements": [...], "total": n}
                             the page as the model reads it — each element carries
-                            its index, tag, label and viewport rect, so the UI can
-                            draw the agent's own view over the live preview
+                            its index, tag, label, viewport rect and whether it is
+                            the one the agent just went for, so the UI can draw
+                            the agent's own view over the live preview. An index
+                            belongs to an element for as long as it is on the
+                            page, and is never handed to another one — but only
+                            the latest `page` says which are still addressable.
     {"type": "token",       "text": "..."}   one delta of the reply being generated
     {"type": "token_reset"}                  discard the tokens streamed so far
     {"type": "thought",     "text": "..."}

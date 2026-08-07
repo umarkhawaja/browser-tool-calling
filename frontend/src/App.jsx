@@ -34,7 +34,6 @@ export default function App() {
           running={agent.running}
           paused={agent.paused}
           controlling={agent.controlling}
-          clickedIndex={agent.clickedIndex}
           view={view}
           onView={setView}
           onTakeControl={agent.takeControl}

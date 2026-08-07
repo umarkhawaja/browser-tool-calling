@@ -11,8 +11,12 @@ const BADGE_HEIGHT = 13;
  * `elements` must be exactly what the model was given and no more — the backend
  * cuts both the listing and this payload at the same limit. Drawing extras
  * would show a page the agent cannot actually act on.
+ *
+ * Which one was just clicked comes from the listing too, rather than from the
+ * number in the click result: a click that moves the page renumbers what is on
+ * it, so that number may name something else entirely by the time this draws.
  */
-export default function AgentView({ elements, scale, clickedIndex, frameHeight }) {
+export default function AgentView({ elements, scale, frameHeight }) {
   return (
     <div className="overlay">
       <div className="overlay-veil" />
@@ -24,7 +28,7 @@ export default function AgentView({ elements, scale, clickedIndex, frameHeight }
         return (
           <div
             key={element.index}
-            className={`element-box ${element.index === clickedIndex ? "clicked" : ""}`}
+            className={`element-box ${element.clicked ? "clicked" : ""}`}
             style={{
               left: x * scale,
               top: y * scale,

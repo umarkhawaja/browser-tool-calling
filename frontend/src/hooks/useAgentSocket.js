@@ -3,12 +3,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:8008/ws";
 const RECONNECT_DELAY_MS = 1500;
 
-/** Pull the element index out of a click result: "Clicked element [8] 'News'". */
-function parseClickedIndex(detail) {
-  const match = /element \[(\d+)\]/.exec(detail || "");
-  return match ? Number(match[1]) : null;
-}
-
 /**
  * Owns the WebSocket to the agent and every piece of state the UI draws from.
  *
@@ -26,7 +20,6 @@ export function useAgentSocket() {
   const [controlling, setControlling] = useState(false);
   const [streaming, setStreaming] = useState("");
   const [stepsTaken, setStepsTaken] = useState(0);
-  const [clickedIndex, setClickedIndex] = useState(null);
   const [model, setModel] = useState("");
   const [maxSteps, setMaxSteps] = useState(15);
 
@@ -60,9 +53,6 @@ export function useAgentSocket() {
           return;
         case "action":
           setStepsTaken((n) => n + 1);
-          if (parseClickedIndex(event.detail) !== null) {
-            setClickedIndex(parseClickedIndex(event.detail));
-          }
           break;
         default:
           break;
@@ -116,7 +106,6 @@ export function useAgentSocket() {
     const trimmed = text.trim();
     if (!trimmed) return;
     setStepsTaken(0);
-    setClickedIndex(null);
     setEntries((all) => [...all, { kind: "you", text: trimmed, at: Date.now() }]);
     send({ message: trimmed });
   }
@@ -133,7 +122,7 @@ export function useAgentSocket() {
 
   return {
     entries, frame, page, connected, running, paused, controlling, streaming,
-    stepsTaken, clickedIndex, model, maxSteps,
+    stepsTaken, model, maxSteps,
     ask,
     stop: () => send({ stop: true }),
     takeControl,

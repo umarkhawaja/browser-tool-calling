@@ -5,7 +5,9 @@ Playwright is faked, so these run without a real Chromium.
 
 import asyncio
 
-from app.browser import BrowserSession, FrameSink, with_scheme
+import pytest
+
+from app.browser import BrowserSession, FrameSink, StaleIndex, with_scheme
 
 
 class FakeMouse:
@@ -33,15 +35,66 @@ class FakeKeyboard:
         self.calls.append(("press", key))
 
 
+class FakeLocator:
+    def __init__(self, page, selector):
+        self._page = page
+        self._selector = selector
+        self.first = self
+
+    async def count(self):
+        return 1
+
+    async def inner_text(self):
+        return "Some element"
+
+    async def click(self, timeout=None):
+        self._page.clicked.append(self._selector)
+
+    async def fill(self, text, timeout=None):
+        self._page.filled.append((self._selector, text))
+
+    async def evaluate(self, script):
+        self._page.marked.append(self._selector)
+
+
 class FakePage:
-    def __init__(self):
+    """`readings` is the indices each successive `elements()` call reports.
+
+    Spelled out rather than derived, so these tests say which numbering they are
+    describing instead of re-deriving it the way the page script does.
+    """
+
+    def __init__(self, readings=()):
         self.mouse = FakeMouse()
         self.keyboard = FakeKeyboard()
+        self.clicked = []
+        self.filled = []
+        self.marked = []
+        self.bases = []
+        self.stripped = 0
+        self._readings = list(readings)
+
+    def locator(self, selector):
+        return FakeLocator(self, selector)
+
+    async def evaluate(self, script, arg=None):
+        if arg is None:  # the only argument-less pass is stripping the numbers
+            self.stripped += 1
+            return None
+        self.bases.append(arg)
+        found = self._readings.pop(0) if self._readings else []
+        return {
+            "next": max(found, default=(arg or 0) - 1) + 1,
+            "elements": [{"index": i, "tag": "a"} for i in found],
+        }
+
+    async def wait_for_timeout(self, ms):
+        pass
 
 
-def _session():
+def _session(readings=()):
     s = BrowserSession()
-    s.page = FakePage()
+    s.page = FakePage(readings)
     return s
 
 
@@ -111,6 +164,104 @@ async def test_a_kind_that_is_not_even_a_string_is_just_unknown():
         assert await s.user_input({"kind": kind}) is False
     assert s.page.mouse.calls == []
     assert s.page.keyboard.calls == []
+
+
+# --- element addressing ----------------------------------------------------
+# Old listings stay in the model's transcript for the whole run, so the danger is
+# not an index that fails to resolve — it is one that resolves to the wrong thing
+# and reads as a correct click in the trace.
+async def test_an_element_keeps_its_number_while_it_is_still_there():
+    # Re-reading a page that has not moved must not move the numbers with it.
+    # A model that is told [1] twice and refused the second time has been given
+    # a listing it cannot trust, and it burns its step budget re-reading.
+    s = _session(readings=[[0, 1, 2], [0, 1, 2]])
+    await s.elements()
+    await s.elements()
+    await s.click(1)
+    assert s.page.clicked == ['[data-agent-idx="1"]']
+
+
+async def test_a_number_from_a_page_that_has_moved_on_is_refused_not_clicked():
+    s = _session(readings=[[0, 1, 2], [3, 4, 5]])
+    stale = (await s.elements())[1]["index"]
+    await s.elements()  # a new page: nothing carries the old numbers
+
+    with pytest.raises(StaleIndex) as refusal:
+        await s.click(stale)
+
+    assert s.page.clicked == [], "a stale index must not reach the page"
+    # The model reads this as the tool result, so it has to say what to do next.
+    assert "listing below" in str(refusal.value)
+
+
+async def test_an_element_that_left_the_page_is_refused_even_mid_range():
+    # [1] closed a menu behind it; [0] and [2] kept their numbers. Being between
+    # two live numbers must not make a gone element addressable.
+    s = _session(readings=[[0, 1, 2], [0, 2]])
+    await s.elements()
+    await s.elements()
+    with pytest.raises(StaleIndex):
+        await s.click(1)
+    assert s.page.clicked == []
+
+
+async def test_typing_into_a_stale_index_is_refused_too():
+    s = _session(readings=[[0, 1, 2], [3, 4, 5]])
+    stale = (await s.elements())[1]["index"]
+    await s.elements()
+
+    with pytest.raises(StaleIndex):
+        await s.input_text(stale, "hello")
+    assert s.page.filled == []
+
+
+async def test_a_failed_reading_invalidates_every_index():
+    # elements() swallows an evaluate() failure and reports nothing found. If the
+    # previous numbers stayed addressable, the model would keep acting on them.
+    s = _session(readings=[[0, 1, 2]])
+    live = (await s.elements())[0]["index"]
+
+    async def boom(script, arg=None):
+        raise RuntimeError("page went away")
+
+    s.page.evaluate = boom
+    assert await s.elements() == []
+    with pytest.raises(StaleIndex):
+        await s.click(live)
+
+
+async def test_numbering_starts_over_for_a_new_task():
+    # A number only has to be unique for as long as something quoting it can
+    # still be acted on, and a task begins with an empty transcript. Letting the
+    # count climb across tasks put [341] [342] [343] on a three-element page, and
+    # llama3.1 answered that by inventing [1] and spending its budget refused.
+    s = _session(readings=[[0, 1, 2], [3, 4]])
+    await s.elements()
+    await s.elements()
+    assert s.page.bases == [0, 3], "numbers climb within a task"
+
+    await s.restart_numbering()
+    assert s.page.stripped == 1, "elements must lose the numbers they carry"
+    await s.elements()
+    assert s.page.bases == [0, 3, 0]
+
+
+async def test_nothing_is_addressable_between_restarting_and_re_reading():
+    s = _session(readings=[[0, 1, 2]])
+    await s.elements()
+    await s.restart_numbering()
+    with pytest.raises(StaleIndex):
+        await s.click(1)
+
+
+async def test_a_click_marks_its_target_in_the_page():
+    # The agent view highlights whatever the agent just clicked. It cannot rely
+    # on the number to find it again — a click that navigates renumbers the lot —
+    # so the click leaves a mark on the node itself for the listing to report.
+    s = _session(readings=[[0, 1, 2]])
+    await s.elements()
+    await s.click(1)
+    assert s.page.marked == ['[data-agent-idx="1"]']
 
 
 # --- screencast backpressure ----------------------------------------------
