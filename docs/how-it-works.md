@@ -62,25 +62,35 @@ structured function calls, so we hand Ollama a list of typed tool schemas and it
 returns *which tool to call* plus its arguments — no prompt-engineered JSON, no
 hand-parsing.
 
-### Step 1 — the tool schemas
+### Step 1 — the tool table
 
-`TOOLS` in `agent.py` defines every action as an Ollama function schema:
+`TOOLS` in `agent.py` is the one place an action is written down. Each row
+carries both halves of a capability — the schema the model is shown, and the
+handler that runs it:
 
 ```python
-{"type": "function", "function": {
-    "name": "click",
-    "description": "Click an interactive element by its index from the current page listing.",
-    "parameters": {"type": "object",
-        "properties": {"index": {"type": "integer"}},
-        "required": ["index"]}}}
+_tool(
+    "click",
+    "Click an interactive element by its index from the current page listing.",
+    {"index": {"type": "integer", "description": "Element index"}},
+    ["index"],
+    run=lambda browser, args: browser.click(int(args["index"])),
+)
 ```
 
-There is one per action: `go_to_url`, `click`, `input_text`, `press_enter`,
-`scroll`, `extract_text`, `dismiss_dialog`.
+`_tool()` expands that into Ollama's function-schema nesting, so the table reads
+as a list of what the agent can do rather than four levels of dict. There is one
+row per action: `go_to_url`, `click`, `input_text`, `press_enter`, `scroll`,
+`extract_text`, `dismiss_dialog`.
+
+Keeping the handler beside the schema is what makes the two impossible to drift
+apart, and it puts each tool's argument coercion — `int(args["index"])`, the
+default for a missing `direction` — next to the schema that declared the
+argument in the first place.
 
 ### Step 2 — the call
 
-`llm.chat_tools(messages, TOOLS)` POSTs to Ollama with the `tools` field and
+`llm.chat_tools(messages, SCHEMAS)` POSTs to Ollama with the `tools` field and
 returns the raw assistant message. When the model wants to act, that message
 carries a `tool_calls` array:
 
@@ -119,14 +129,16 @@ says how many were dropped.
 
 ### Step 4 — the dispatch
 
-`_execute(browser, name, args)` in `agent.py` maps the tool name to a
-`BrowserSession` method:
+There is no dispatch layer to speak of, which is the point. `_run_tool_call`
+looks the name up in the table and runs whatever that row carries:
 
 ```python
-if name == "go_to_url":      return await browser.go_to_url(args["url"])
-if name == "click":          return await browser.click(int(args["index"]))
-if name == "dismiss_dialog": return await browser.dismiss_overlays() or "No dialog found."
+tool = _BY_NAME.get(name)
+result = await tool.run(browser, args) if tool else f"Unknown tool {name!r}."
 ```
+
+An invented tool name comes back as a *result the model can read* rather than an
+exception, so it can correct itself on the next turn.
 
 ### Step 5 — finishing
 
@@ -161,9 +173,9 @@ running until the model answers in plain text or hits `MAX_STEPS` (15). The
 
 ```
     ┌────────────────────────────────────────────────┐
-    │ 1. ask:   chat_tools(messages, TOOLS)            │◄── llama3.1
+    │ 1. ask:   chat_tools(messages, SCHEMAS)          │◄── llama3.1
     │ 2. call:  message.tool_calls → {name, arguments} │
-    │ 3. act:   _execute(browser, name, args)          │──► Chromium
+    │ 3. act:   TOOLS[name].run(browser, args)         │──► Chromium
     │ 4. feed:  role:"tool" result + new page state    │
     └────────────────────────┬───────────────────────┘
                             │ repeat until a plain-text answer (no tool_calls)

@@ -146,9 +146,9 @@ Two things keep the classifier honest, and both need a live Ollama to evaluate:
   prices and narrated browsing sessions that never happened. Keep it strict.
 
 **The agent loop** (`agent.py:run_agent`) uses Ollama's *native* tool calling,
-not hand-parsed JSON. It appends the raw assistant message to `messages`,
-executes each `tool_calls` entry via `_execute`, and feeds back a `tool` message
-containing the action result **plus a freshly observed page state**. It
+not hand-parsed JSON. It appends the raw assistant message to `messages`, runs
+each `tool_calls` entry through the `TOOLS` table, and feeds back a `tool`
+message containing the action result **plus a freshly observed page state**. It
 terminates when the model returns no tool calls, or at `MAX_STEPS` (15).
 
 Two guardrails exist because small local models misbehave, and both should be
@@ -263,8 +263,19 @@ browser, routing and the model client. Two pieces are worth knowing:
 - `Connection` in `main.py` holds everything scoped to one client — the
   screencast subscription, the in-flight turn, and who currently holds the
   browser. The browser itself is process-wide; everything else is per-socket.
-- `_tool()` in `agent.py` builds the Ollama function schemas, so `TOOLS` reads
-  as a table of what the agent can do rather than four levels of nesting.
+- `TOOLS` in `agent.py` is the whole of the agent's action surface. Each row is
+  a `Tool(name, schema, run)` built by `_tool()`, holding both what the model is
+  told and what running it does, so **adding a tool means adding one row and
+  nothing else**: `SCHEMAS` (what Ollama is sent) and the name lookup are both
+  derived from the table, and each row's `run` owns the coercion its own schema
+  implies. A name in no row comes back to the model as `Unknown tool 'x'.`
+  rather than raising, but two rows *sharing* a name raise at import — that one
+  fails silently otherwise, leaving the earlier row dead while Ollama is still
+  told the tool exists twice. `test_every_declared_tool_reaches_the_browser` is
+  the other guard: it walks `TOOLS` and drives each row through the loop with
+  arguments built from that row's own schema, asserting exactly one browser
+  call, so a schema with no handler — or one wired to the wrong method — fails
+  there instead of at the model.
 
 On the frontend, pure logic lives in `src/lib/` so it can be tested without
 rendering: `pageInput.js` (event → protocol mapping, coordinate scaling) and

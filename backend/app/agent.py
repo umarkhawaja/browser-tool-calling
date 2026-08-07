@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from app.browser import BrowserSession
@@ -44,56 +45,134 @@ Guidelines:
   tools and reply with the final answer as plain language."""
 
 
+# What running one tool does: take the model's arguments, drive the browser,
+# and return the sentence the model reads back as the result.
+Run = Callable[[BrowserSession, dict[str, Any]], Awaitable[str]]
+
+
+@dataclass(frozen=True, eq=False)
+class Tool:
+    """One agent capability: what the model is told, and what running it does.
+
+    Both halves live in the same `TOOLS` entry so they cannot drift. The model
+    only ever sees `schema`; nothing outside this module needs `run`.
+
+    `eq=False` keeps identity equality and hashing. The generated versions would
+    read every field, and `schema` is a dict — so a `Tool` would look hashable
+    and raise the moment anyone put one in a set. Rows are singletons defined
+    once below; identity is the comparison that means anything. Note `frozen`
+    only protects the fields themselves: `schema` is still a mutable dict, and
+    `SCHEMAS` holds the very same objects.
+    """
+
+    name: str
+    schema: dict[str, Any]
+    run: Run
+
+
 def _tool(
     name: str,
     description: str,
     properties: dict[str, Any] | None = None,
     required: list[str] | None = None,
-) -> dict[str, Any]:
-    """One tool in Ollama's function-schema format.
+    *,
+    run: Run,
+) -> Tool:
+    """One entry in the table below, in Ollama's function-schema format.
 
-    The nesting is fixed boilerplate; only the four values here ever vary, so
-    the list below reads as a table of what the agent can do.
+    The nesting is fixed boilerplate; only the values passed here ever vary, so
+    the table reads as a list of what the agent can do rather than four levels
+    of dict.
     """
     parameters: dict[str, Any] = {"type": "object", "properties": properties or {}}
     if required:
         parameters["required"] = required
-    return {
-        "type": "function",
-        "function": {"name": name, "description": description, "parameters": parameters},
-    }
+    return Tool(
+        name=name,
+        schema={
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": parameters,
+            },
+        },
+        run=run,
+    )
 
 
-# The tools the model may call. `_execute` below dispatches on these names.
-TOOLS: list[dict[str, Any]] = [
+async def _dismiss_dialog(browser: BrowserSession, args: dict[str, Any]) -> str:
+    """`dismiss_overlays` reports "nothing found" as None, which the model cannot
+    read; every tool result has to be a sentence."""
+    return await browser.dismiss_overlays() or "No dialog found."
+
+
+# Everything the agent can do, and the only place it is written down. Each entry
+# owns the coercion its own schema implies — a model told `index` is an integer
+# still sometimes sends "3" — so adding a tool means adding one row here and
+# nothing else.
+TOOLS: list[Tool] = [
     _tool(
         "go_to_url",
         "Navigate the browser to a URL.",
         {"url": {"type": "string", "description": "The URL to open"}},
         ["url"],
+        run=lambda browser, args: browser.go_to_url(args["url"]),
     ),
     _tool(
         "click",
         "Click an interactive element by its index from the current page listing.",
         {"index": {"type": "integer", "description": "Element index"}},
         ["index"],
+        run=lambda browser, args: browser.click(int(args["index"])),
     ),
     _tool(
         "input_text",
         "Type text into an input element by its index.",
         {"index": {"type": "integer"}, "text": {"type": "string"}},
         ["index", "text"],
+        run=lambda browser, args: browser.input_text(
+            int(args["index"]), args.get("text", "")
+        ),
     ),
-    _tool("press_enter", "Press the Enter key, e.g. to submit a search."),
+    _tool(
+        "press_enter",
+        "Press the Enter key, e.g. to submit a search.",
+        run=lambda browser, args: browser.press_enter(),
+    ),
     _tool(
         "scroll",
         "Scroll the page up or down.",
         {"direction": {"type": "string", "enum": ["up", "down"]}},
         ["direction"],
+        run=lambda browser, args: browser.scroll(args.get("direction", "down")),
     ),
-    _tool("extract_text", "Return the visible text of the current page."),
-    _tool("dismiss_dialog", "Dismiss a cookie/consent popup that is blocking the page."),
+    _tool(
+        "extract_text",
+        "Return the visible text of the current page.",
+        run=lambda browser, args: browser.extract_text(),
+    ),
+    _tool(
+        "dismiss_dialog",
+        "Dismiss a cookie/consent popup that is blocking the page.",
+        run=_dismiss_dialog,
+    ),
 ]
+
+_BY_NAME: dict[str, Tool] = {tool.name: tool for tool in TOOLS}
+
+if len(_BY_NAME) != len(TOOLS):
+    # Two rows sharing a name is the copy-paste slip "just add a row" invites,
+    # and it fails quietly: the lookup keeps the last one, so the earlier row is
+    # dead while Ollama is still told the tool exists twice.
+    raise ValueError(
+        f"duplicate name in TOOLS: {[t.name for t in TOOLS]} has "
+        f"{len(TOOLS)} rows but {len(_BY_NAME)} distinct names"
+    )
+
+# What actually goes over the wire to Ollama — the schemas only, derived rather
+# than maintained, so the table above stays the single source.
+SCHEMAS: list[dict[str, Any]] = [tool.schema for tool in TOOLS]
 
 # A callback the loop uses to push events to the WebSocket. Each event is a dict.
 Emit = Callable[[dict[str, Any]], Awaitable[None]]
@@ -137,25 +216,6 @@ async def observe(browser: BrowserSession, emit: Emit | None = None) -> str:
             }
         )
     return _format_state(url, elements)
-
-
-async def _execute(browser: BrowserSession, name: str, args: dict[str, Any]) -> str:
-    """Run one tool call and return a human-readable result."""
-    if name == "go_to_url":
-        return await browser.go_to_url(args["url"])
-    if name == "click":
-        return await browser.click(int(args["index"]))
-    if name == "input_text":
-        return await browser.input_text(int(args["index"]), args.get("text", ""))
-    if name == "press_enter":
-        return await browser.press_enter()
-    if name == "scroll":
-        return await browser.scroll(args.get("direction", "down"))
-    if name == "extract_text":
-        return await browser.extract_text()
-    if name == "dismiss_dialog":
-        return await browser.dismiss_overlays() or "No dialog found."
-    return f"Unknown tool {name!r}."
 
 
 def _parse_args(raw: Any) -> dict[str, Any]:
@@ -220,8 +280,15 @@ async def _run_tool_call(
     """Execute one tool call and build the message reporting it back."""
     function = call.get("function", {})
     name = function.get("name", "")
+    tool = _BY_NAME.get(name)
     try:
-        result = await _execute(browser, name, _parse_args(function.get("arguments")))
+        # An invented tool name is the model's mistake to correct, not an
+        # exception — it comes back as a result it can read and try again from.
+        result = (
+            await tool.run(browser, _parse_args(function.get("arguments")))
+            if tool
+            else f"Unknown tool {name!r}."
+        )
     except Exception as e:  # surface any browser failure back to the model
         result = f"Action failed: {e}"
 
@@ -260,7 +327,7 @@ async def run_agent(
             messages.append(await _wait_for_human(gate, browser, emit))
 
         try:
-            message = await chat_tools(messages, TOOLS, on_token)
+            message = await chat_tools(messages, SCHEMAS, on_token)
         except LLMError as e:
             await emit({"type": "error", "text": str(e)})
             return
