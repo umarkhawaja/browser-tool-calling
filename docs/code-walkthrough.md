@@ -240,10 +240,15 @@ Three details that are easy to get wrong:
 ### Taking control of the page
 `{"control":"user"}` clears an `asyncio.Event` that `run_agent` awaits at the top
 of each iteration, pausing the agent at the next **step boundary**. `{"input":…}`
-events then reach **`BrowserSession.user_click/user_type/user_scroll/…`**, which
-dispatch through Playwright's `page.mouse` / `page.keyboard` at viewport
-coordinates — the same space a screencast frame covers, so the frontend only has
-to undo the `<img>` scaling. Handing control back appends a message telling the
+events then reach **`BrowserSession.user_input(event)`**, which takes the event
+dict whole and looks its `kind` up in **`GESTURES`** — one row per gesture, each
+saying how to perform it through Playwright's `page.mouse` / `page.keyboard` and
+whether it can move the DOM underneath. Coordinates are viewport pixels, the same
+space a screencast frame covers, so the frontend only has to undo the `<img>`
+scaling; the return value is what tells `main.py` to re-observe, so nothing above
+`browser.py` knows a mouse move is the one gesture too frequent to re-read after.
+Adding a gesture is a row here and a payload in `pageInput.js`, nothing more.
+Handing control back appends a message telling the
 model the page may have changed underneath it, plus a fresh observation.
 
 ### Cookie/consent handling
@@ -299,7 +304,7 @@ action.
   - actions: `go_to_url(url)`, `click(index)`, `input_text(index,text)`, `press_enter()`, `scroll(direction)`, `extract_text()`, `dismiss_overlays()`
   - observation: `elements()`, `screenshot_b64()`, `url()`
   - live view: `add_frame_sink(on_frame)`, `remove_frame_sink(sink)`
-  - human input: `user_click()`, `user_type()`, `user_key()`, `user_scroll()`, `user_move()`
+  - human input: `user_input(event)` — one gesture from the preview, dispatched through `browser.GESTURES`; returns whether the page is worth re-reading
 
 ---
 

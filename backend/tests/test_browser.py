@@ -46,13 +46,15 @@ def _session():
 
 
 # --- user input ------------------------------------------------------------
-async def test_user_input_dispatches_to_playwright():
+# These drive `user_input` with the protocol dict the socket receives, because
+# that is the only entry point the rest of the app has.
+async def test_every_gesture_reaches_playwright():
     s = _session()
-    await s.user_move(10, 20)
-    await s.user_click(30, 40)
-    await s.user_scroll(0, 120)
-    await s.user_type("hello")
-    await s.user_key("Enter")
+    await s.user_input({"kind": "move", "x": 10, "y": 20})
+    await s.user_input({"kind": "click", "x": 30, "y": 40})
+    await s.user_input({"kind": "scroll", "dx": 0, "dy": 120})
+    await s.user_input({"kind": "type", "text": "hello"})
+    await s.user_input({"kind": "key", "key": "Enter"})
 
     assert s.page.mouse.calls == [
         ("move", 10, 20),
@@ -62,23 +64,42 @@ async def test_user_input_dispatches_to_playwright():
     assert s.page.keyboard.calls == [("type", "hello"), ("press", "Enter")]
 
 
-async def test_user_click_passes_button_and_count():
+async def test_a_click_passes_button_and_count():
     s = _session()
-    await s.user_click(1, 2, "right", 2)
+    await s.user_input({"kind": "click", "x": 1, "y": 2, "button": "right", "clicks": 2})
     assert s.page.mouse.calls == [("click", 1, 2, "right", 2)]
 
 
-async def test_user_click_rejects_an_unknown_button():
+async def test_a_click_rejects_an_unknown_button():
     # The button name comes off the wire, so it must not reach Playwright raw.
     s = _session()
-    await s.user_click(1, 2, "nonsense", 1)
+    await s.user_input({"kind": "click", "x": 1, "y": 2, "button": "nonsense"})
     assert s.page.mouse.calls == [("click", 1, 2, "left", 1)]
 
 
-async def test_user_click_floors_click_count_at_one():
+async def test_a_click_floors_the_click_count_at_one():
     s = _session()
-    await s.user_click(1, 2, "left", 0)
+    await s.user_input({"kind": "click", "x": 1, "y": 2, "clicks": 0})
     assert s.page.mouse.calls == [("click", 1, 2, "left", 1)]
+
+
+async def test_gestures_report_whether_the_page_may_have_moved():
+    # The caller re-reads the page on a true, and a mouse move is far too
+    # frequent to pay for that — so only a move may report false.
+    s = _session()
+    assert await s.user_input({"kind": "move", "x": 1, "y": 2}) is False
+    assert await s.user_input({"kind": "click", "x": 1, "y": 2}) is True
+    assert await s.user_input({"kind": "scroll", "dx": 0, "dy": 1}) is True
+    assert await s.user_input({"kind": "type", "text": "a"}) is True
+    assert await s.user_input({"kind": "key", "key": "Enter"}) is True
+
+
+async def test_an_unknown_gesture_does_nothing():
+    s = _session()
+    assert await s.user_input({"kind": "drag", "x": 1, "y": 2}) is False
+    assert await s.user_input({}) is False
+    assert s.page.mouse.calls == []
+    assert s.page.keyboard.calls == []
 
 
 # --- screencast backpressure ----------------------------------------------

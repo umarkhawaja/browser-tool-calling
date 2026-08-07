@@ -5,9 +5,9 @@ call. It can also produce a screenshot (base64 JPEG), stream a live CDP
 screencast, and return a numbered list of the page's interactive elements, so the
 model always knows what it can act on.
 
-The same page can be driven by a human: `user_*` methods dispatch raw mouse and
-keyboard input at viewport coordinates, which is what makes the frontend's live
-preview interactive rather than a passive image.
+The same page can be driven by a human: `user_input` takes one raw mouse or
+keyboard event from the preview and performs it at viewport coordinates, which is
+what makes the frontend's live preview interactive rather than a passive image.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import asyncio
 import base64
 import contextlib
 from collections.abc import Awaitable
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from playwright.async_api import Browser, Page, async_playwright
@@ -131,6 +132,60 @@ class FrameSink:
             self._task.cancel()
 
 
+# --- user-driven input (the interactive preview) -----------------------------
+# What performing one gesture does: take the event dict as it arrived from the
+# client and drive the page with it.
+Perform = Callable[[Page, dict[str, Any]], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class Gesture:
+    """One thing a human can do to the page, and what it costs to do it."""
+
+    kind: str
+    perform: Perform
+    # Whether performing it can move the DOM underneath, so `user_input` can tell
+    # its caller when the page is worth re-reading. A hover fires on every few
+    # pixels of cursor travel, which is far too often to pay for an evaluate().
+    changes_page: bool = True
+
+
+def _button(name: Any) -> str:
+    """The button name arrives off the wire, so it must not reach Playwright raw."""
+    return name if name in ("left", "middle", "right") else "left"
+
+
+# Everything the human can do to the page from the preview, and the only place it
+# is written down. Each row owns the coercion its own event shape implies, so
+# adding a gesture — a drag, a paste — means adding one row here and teaching the
+# frontend to send it. Coordinates are viewport CSS pixels, the same space a
+# screencast frame covers, so the frontend only has to undo the <img> scaling.
+#
+# These deliberately use Playwright's mouse/keyboard API rather than the raw CDP
+# Input domain, which would mean hand-rolling virtual key-code tables.
+GESTURES: list[Gesture] = [
+    Gesture(
+        "move",
+        lambda page, e: page.mouse.move(e["x"], e["y"]),
+        changes_page=False,
+    ),
+    Gesture(
+        "click",
+        lambda page, e: page.mouse.click(
+            e["x"],
+            e["y"],
+            button=_button(e.get("button")),
+            click_count=max(1, int(e.get("clicks", 1))),
+        ),
+    ),
+    Gesture("scroll", lambda page, e: page.mouse.wheel(e.get("dx", 0), e.get("dy", 0))),
+    Gesture("type", lambda page, e: page.keyboard.type(e.get("text", ""))),
+    Gesture("key", lambda page, e: page.keyboard.press(e.get("key", ""))),
+]
+
+_BY_KIND: dict[str, Gesture] = {gesture.kind: gesture for gesture in GESTURES}
+
+
 class BrowserSession:
     def __init__(self) -> None:
         self._pw = None
@@ -144,7 +199,7 @@ class BrowserSession:
     async def start(self) -> None:
         self._pw = await async_playwright().start()
         # headless=True -> no OS window pops up; the UI shows a live screencast
-        # that the user can also click and type into (see the user_* methods).
+        # that the user can also click and type into (see `user_input`).
         self.browser = await self._pw.chromium.launch(headless=True)
         ctx = await self.browser.new_context(
             viewport=dict(VIEWPORT), locale=BROWSER_LOCALE
@@ -225,28 +280,18 @@ class BrowserSession:
         return text.strip()[:4000]
 
     # --- user-driven input (the interactive preview) ------------------------
-    # These take viewport CSS pixels, the same space a screencast frame covers,
-    # so the frontend only has to undo the <img> scaling. They deliberately use
-    # Playwright's mouse/keyboard API rather than the raw CDP Input domain,
-    # which would mean hand-rolling virtual key-code tables.
-    async def user_move(self, x: float, y: float) -> None:
-        await self.page.mouse.move(x, y)
+    async def user_input(self, event: dict[str, Any]) -> bool:
+        """Perform one gesture from the preview; say whether the page may have moved.
 
-    async def user_click(
-        self, x: float, y: float, button: str = "left", clicks: int = 1
-    ) -> None:
-        if button not in ("left", "middle", "right"):
-            button = "left"
-        await self.page.mouse.click(x, y, button=button, click_count=max(1, clicks))
-
-    async def user_scroll(self, dx: float, dy: float) -> None:
-        await self.page.mouse.wheel(dx, dy)
-
-    async def user_type(self, text: str) -> None:
-        await self.page.keyboard.type(text)
-
-    async def user_key(self, key: str) -> None:
-        await self.page.keyboard.press(key)
+        The event dict is taken whole: no caller unpacks it, names a kind, or has
+        to know which gestures are worth re-reading the page after. A kind no row
+        claims does nothing, and by doing nothing has changed nothing.
+        """
+        gesture = _BY_KIND.get(event.get("kind"))
+        if gesture is None:
+            return False
+        await gesture.perform(self.page, event)
+        return gesture.changes_page
 
     # --- observation -------------------------------------------------------
     async def elements(self) -> list[dict[str, Any]]:

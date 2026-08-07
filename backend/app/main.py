@@ -8,14 +8,10 @@ Client -> server:
     {"control": "user"}     take the browser; pauses the agent at its next step
     {"control": "agent"}    hand the browser back; the agent re-observes and resumes
     {"navigate": "url"}     open an address yourself, only while you hold control
-    {"input": {...}}        raw input for the live preview, only while you hold
-                            control. Coordinates are viewport CSS pixels:
-                              {"kind": "move",   "x": 0, "y": 0}
-                              {"kind": "click",  "x": 0, "y": 0,
-                               "button": "left", "clicks": 1}
-                              {"kind": "scroll", "dx": 0, "dy": 0}
-                              {"kind": "type",   "text": "..."}
-                              {"kind": "key",    "key": "Enter"}
+    {"input": {...}}        one mouse/keyboard gesture for the live preview, only
+                            while you hold control. `GESTURES` in `browser.py` is
+                            the vocabulary and what each kind carries; nothing
+                            here needs to know either.
 
 Server -> client:  a stream of events, each a JSON object with a "type":
     {"type": "hello",       "model": "...", "max_steps": 15}   sent once, on connect
@@ -154,35 +150,15 @@ class Connection:
         # so a mis-click can never land in the middle of an agent step.
         if self.browser is None or not self.human_has_control:
             return
-        kind = event.get("kind")
         try:
-            await self._apply_input(kind, event)
+            may_have_moved = await self.browser.user_input(event)
         except Exception as e:
             await self.send({"type": "error", "text": f"Input failed: {e}"})
             return
-        # Anything but a mouse move can change the DOM, so re-read the page to
-        # keep the URL and the element overlay honest. Moves are far too
-        # frequent to pay for an evaluate() each time.
-        if kind != "move":
+        # Re-read the page when the gesture could have changed it, so the URL and
+        # the element overlay stay honest.
+        if may_have_moved:
             await observe(self.browser, self.send)
-
-    async def _apply_input(self, kind: str | None, event: Event) -> None:
-        browser = self.browser
-        if kind == "move":
-            await browser.user_move(event["x"], event["y"])
-        elif kind == "click":
-            await browser.user_click(
-                event["x"],
-                event["y"],
-                event.get("button", "left"),
-                int(event.get("clicks", 1)),
-            )
-        elif kind == "scroll":
-            await browser.user_scroll(event.get("dx", 0), event.get("dy", 0))
-        elif kind == "type":
-            await browser.user_type(event.get("text", ""))
-        elif kind == "key":
-            await browser.user_key(event.get("key", ""))
 
     async def navigate(self, url: str) -> None:
         """Let the human type an address — the agent's tools are not theirs."""
