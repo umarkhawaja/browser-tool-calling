@@ -285,9 +285,12 @@ class BrowserSession:
 
         The event dict is taken whole: no caller unpacks it, names a kind, or has
         to know which gestures are worth re-reading the page after. A kind no row
-        claims does nothing, and by doing nothing has changed nothing.
+        claims does nothing, and by doing nothing has changed nothing — including
+        a `kind` that is not a string at all, which the dict lookup would raise
+        on rather than miss.
         """
-        gesture = _BY_KIND.get(event.get("kind"))
+        kind = event.get("kind")
+        gesture = _BY_KIND.get(kind) if isinstance(kind, str) else None
         if gesture is None:
             return False
         await gesture.perform(self.page, event)

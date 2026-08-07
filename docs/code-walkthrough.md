@@ -247,9 +247,11 @@ whether it can move the DOM underneath. Coordinates are viewport pixels, the sam
 space a screencast frame covers, so the frontend only has to undo the `<img>`
 scaling; the return value is what tells `main.py` to re-observe, so nothing above
 `browser.py` knows a mouse move is the one gesture too frequent to re-read after.
-Adding a gesture is a row here and a payload in `pageInput.js`, nothing more.
-Handing control back appends a message telling the
-model the page may have changed underneath it, plus a fresh observation.
+Adding a gesture is a row here plus whichever frontend file emits it — the
+pointer kinds (`move`, `click`, `scroll`) come from the DOM handlers in
+`hooks/usePageInput.js`, the keyboard ones (`type`, `key`) from `toKeyEvent` in
+`lib/pageInput.js`. Handing control back appends a message telling the model the
+page may have changed underneath it, plus a fresh observation.
 
 ### Cookie/consent handling
 **`BrowserSession.dismiss_overlays()`** scans every frame for a button whose

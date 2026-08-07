@@ -102,6 +102,17 @@ async def test_an_unknown_gesture_does_nothing():
     assert s.page.keyboard.calls == []
 
 
+async def test_a_kind_that_is_not_even_a_string_is_just_unknown():
+    # `kind` is whatever the client put on the wire. A list or a dict is not a
+    # gesture any row claims, and looking one up in a dict raises rather than
+    # missing — so it has to be ruled out before the lookup, not after.
+    s = _session()
+    for kind in ([], {}, 7, None, True):
+        assert await s.user_input({"kind": kind}) is False
+    assert s.page.mouse.calls == []
+    assert s.page.keyboard.calls == []
+
+
 # --- screencast backpressure ----------------------------------------------
 async def test_frame_sink_drops_stale_frames_while_one_is_in_flight():
     sent = []
