@@ -266,8 +266,15 @@ the agent loop awaits at the top of every iteration, so it pauses at the next
 ```
 click in the <img>  ──▶  scale by (frame width / rendered width)
                     ──▶  {"kind":"click","x":640,"y":400}  ──WebSocket──▶
+                    ──▶  browser.user_input(event)
                     ──▶  page.mouse.click(640, 400)        ──▶  Chromium
 ```
+
+The socket hands that dict straight to `BrowserSession.user_input`, which owns the
+whole input vocabulary: `GESTURES` in `browser.py` holds one row per gesture —
+how to perform it, and whether it can move the DOM. A row answering *yes* is what
+makes the socket re-read the page afterwards, so the URL bar and the element
+overlay stay honest without a hover costing an `evaluate()` on every pixel.
 
 The frame is captured at the viewport size and then scaled by CSS, so undoing
 that scale is the whole coordinate mapping — no scroll offset is involved,
