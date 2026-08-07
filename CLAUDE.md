@@ -10,9 +10,11 @@ Python/FastAPI backend + React/Vite frontend, connected by a single WebSocket.
 
 `README.md` covers setup/usage; `docs/how-it-works.md` and
 `docs/code-walkthrough.md` cover the design in depth and are worth reading
-before non-trivial changes. `BACKLOG.md` lists the known gaps with enough
-detail to pick any of them up cold — check it before proposing new work, and
-prune an entry when it is fixed rather than leaving it to rot.
+before non-trivial changes. `BACKLOG.md` lists the known gaps with enough detail
+to pick any of them up cold — check it before proposing new work; *Working the
+backlog* below covers how its entries are written and worked. It is a local
+working note, gitignored on purpose: it is a plan rather than a description of
+the code, and versioning it would put every reordering into the history.
 
 ## Commands
 
@@ -47,6 +49,50 @@ Python layout — hand-wrapping will just be undone.
 `RUF001`-`RUF003` (ambiguous unicode) are off on purpose: the router's few-shot
 examples and the routing eval are written in the scripts and punctuation they
 would really arrive in, and flagging those characters is pure noise.
+
+## Working the backlog
+
+Entries are worked **one at a time, one branch each** — that independence is what
+makes any of them reviewable, or revertable, on its own.
+
+**Writing one.** Every task must be a *vertical slice*: shippable end to end on
+its own branch, with nothing else needing to land alongside it. Touching
+`browser.py`, `agent.py`, the WebSocket contract and the preview pane in one task
+is fine — that is the full depth of a single behaviour. Touching one layer across
+many behaviours ("add types to the backend", "wire up error handling everywhere",
+"refactor all the tools") is horizontal, and must be split before it goes in the
+list. Three questions settle it: can it merge alone without breaking `main`, can
+a reviewer tell from the diff whether it worked, and does finishing it change
+something observable? Any *no* and it is not a task yet — restate it as the
+smallest change that passes all three and file the rest separately. Prefer
+several thin, boring entries over one that has to be coordinated. A pure
+restructuring answers the third question at the interface instead; see *Code
+shape*.
+
+**Working one.**
+
+- **Branch per task.** Cut a fresh branch from an up-to-date `main` before
+  touching anything: `fix/<n>-<slug>` for a backlog number (`fix/2-ws-origin`),
+  `feature/<slug>` for anything else. Never start a second task on a branch that
+  already carries one, and never work directly on `main`.
+- **No passengers.** Do not fold in a neighbouring entry, an unrelated cleanup or
+  a drive-by rename, however adjacent. If the work uncovers a second problem,
+  file it as a new entry and leave it.
+- **Confirm the entry is still real** before writing code — read the cited files
+  and check the described behaviour still holds. The backlog is maintained by
+  hand and can drift ahead of or behind the code.
+- **Finish the entry, not the easy half.** Done means the fix, its tests, and the
+  doc updates it implies (`CLAUDE.md`, `docs/`, `main.py`'s protocol docstring)
+  are all in the branch, and the `BACKLOG.md` entry is deleted as the branch is
+  finished. Since the backlog is untracked it survives the branch switch on its
+  own; a fix that leaves its entry standing reads as unfixed next session.
+- **Green before done.** `./test.sh` and `./lint.sh` both pass, and anything with
+  a visible surface is verified in the running app rather than reasoned about.
+- **Commit at task granularity.** One coherent commit (or a short ordered series)
+  per branch, saying what the entry was and why the fix takes the shape it does.
+- **Stop at the boundary.** If a task genuinely cannot be done without another
+  landing first, say so and stop rather than quietly widening the branch.
+  Pushing, merging or opening a PR happens only when asked.
 
 ## Architecture
 
@@ -183,6 +229,33 @@ Env vars (`backend/app/config.py`, read once at import): `MODEL`, `OLLAMA_URL`,
 means setting both `BACKEND_PORT` and `VITE_WS_URL`.
 
 ## Code shape
+
+**Modules must be deep.** A module earns its place by hiding much more than it
+exposes: a small interface over substantial functionality, judged by that ratio
+and not by line count. The two worth copying are both described above — `llm.py`,
+whose three functions hide streaming, NDJSON reassembly, timeouts and error
+shaping, and `add_frame_sink`, whose two methods hide the entire screencast.
+
+The failure to avoid is the shallow layer, which costs a call and an abstraction
+and buys nothing:
+
+- **No pass-through methods.** A method whose body is one call to the layer below,
+  with the same arguments, is not an abstraction — it is a rename.
+- **No pass-through layers.** If a concept has to be spelled out again at each
+  level (a name here, an if-branch there, a one-line method below), the layers
+  are shallow and the concept belongs in *one* of them.
+- **One capability, one place.** Adding a tool, an event type or an action should
+  mean editing one table or one module. Where it means editing three, that is the
+  design telling you the interface is too wide.
+- **Grow an existing module before adding one.** A new file is justified when a
+  concept has an interface genuinely smaller than what it hides — not to keep
+  files short. Splitting a deep module into two shallow ones is a net loss.
+
+Design new work this way from the start: decide what the caller should *not* have
+to know, and put the interface there. Reshaping existing code toward depth is
+still one task on one branch, and since behaviour by definition does not change,
+its "done when" is stated at the interface — *adding a tool touches one place* —
+plus a green suite.
 
 The backend splits by concern, one module each for the socket, the loop, the
 browser, routing and the model client. Two pieces are worth knowing:
