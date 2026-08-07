@@ -28,7 +28,7 @@ function setup(props = {}) {
   const utils = render(
     <PreviewWindow
       frame={FRAME} page={PAGE} running={false} paused={false}
-      controlling={false} clickedIndex={null} view="you"
+      controlling={false} view="you"
       onView={onView} onTakeControl={noop} onReleaseControl={noop}
       onInput={onInput} onNavigate={onNavigate}
       {...props}
@@ -99,10 +99,21 @@ describe("PreviewWindow", () => {
     });
 
     it("marks the element the agent just clicked", () => {
-      setup({ view: "agent", clickedIndex: 8 });
+      // The listing says which one it was, not the number in the click result:
+      // a click that moves the page renumbers what is on it.
+      const [home, news] = PAGE.elements;
+      setup({
+        view: "agent",
+        page: { ...PAGE, elements: [home, { ...news, clicked: true }] },
+      });
       const hits = document.querySelectorAll(".element-box.clicked");
       expect(hits).toHaveLength(1);
       expect(hits[0].textContent).toBe("8");
+    });
+
+    it("marks nothing when the click took the page somewhere else", () => {
+      setup({ view: "agent" });
+      expect(document.querySelectorAll(".element-box.clicked")).toHaveLength(0);
     });
 
     it("reports how many elements the model can address", () => {

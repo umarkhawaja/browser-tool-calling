@@ -64,7 +64,7 @@ function StatusStrip({
 }
 
 export default function PreviewWindow({
-  frame, page, running, paused, controlling, clickedIndex,
+  frame, page, running, paused, controlling,
   view, onView, onTakeControl, onReleaseControl, onInput, onNavigate,
 }) {
   const imageRef = useRef(null);
@@ -130,7 +130,6 @@ export default function PreviewWindow({
               <AgentView
                 elements={elements}
                 scale={scale}
-                clickedIndex={clickedIndex}
                 frameHeight={frameSize.height}
               />
             )}

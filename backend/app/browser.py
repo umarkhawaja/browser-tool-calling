@@ -19,7 +19,7 @@ from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from playwright.async_api import Browser, Page, async_playwright
+from playwright.async_api import Browser, Locator, Page, async_playwright
 
 from app.config import BROWSER_LOCALE
 
@@ -28,32 +28,45 @@ from app.config import BROWSER_LOCALE
 # the preview image into a click on the page with a single scale factor.
 VIEWPORT = {"width": 1280, "height": 800}
 
-# JS that tags every visible interactive element with a stable index and returns
-# a compact description. Clicking is then done by that index, so the model never
+# JS that tags every visible interactive element with an index and returns a
+# compact description. Clicking is then done by that index, so the model never
 # has to guess CSS selectors.
+#
+# A number belongs to an element, not to a position in a listing: an element
+# already carrying one keeps it, and only elements without one draw from `next`.
+# Two things fall out of that, and both matter.
+#
+# Re-reading a page that has not moved leaves the model's numbers exactly where
+# they were, so it can act on the listing it was just given. And an element on a
+# page the model has moved on from can never be reached by a number it read
+# earlier — that number is either gone from the document or still on the very
+# element it named. Numbering each listing from zero instead made [8] resolve to
+# whatever happened to be eighth now: a wrong click that reads as a correct one
+# in the trace, which is worse than an error. `BrowserSession._element` refuses
+# anything outside the latest reading.
 COLLECT_JS = """
-() => {
+(next) => {
   const sel = 'a, button, input, textarea, select, [role=button], [onclick]';
   const out = [];
-  let i = 0;
   for (const el of document.querySelectorAll(sel)) {
     const r = el.getBoundingClientRect();
     const s = window.getComputedStyle(el);
     if (r.width === 0 || r.height === 0) continue;
     if (s.visibility === 'hidden' || s.display === 'none' || s.opacity === '0') continue;
-    el.setAttribute('data-agent-idx', String(i));
+    let idx = el.getAttribute('data-agent-idx');
+    if (idx === null) el.setAttribute('data-agent-idx', idx = String(next++));
     const label = (el.innerText || el.value || el.getAttribute('placeholder') ||
                    el.getAttribute('aria-label') || el.getAttribute('name') || '')
                   .replace(/\\s+/g, ' ').trim().slice(0, 120);
     // The rect is in viewport CSS pixels, the same space a screencast frame
     // covers, so the UI can draw each box straight onto the live preview.
-    out.push({ index: i, tag: el.tagName.toLowerCase(),
+    out.push({ index: Number(idx), tag: el.tagName.toLowerCase(),
                type: el.getAttribute('type') || '', label,
+               clicked: el.hasAttribute('data-agent-clicked'),
                rect: [Math.round(r.x), Math.round(r.y),
                       Math.round(r.width), Math.round(r.height)] });
-    i++;
   }
-  return out;
+  return { next, elements: out };
 }
 """
 
@@ -74,6 +87,39 @@ CONSENT_LABELS = (
     "Accept",
     "OK",
 )
+
+
+# Takes back everything the last task left on the page: the numbers it was handed
+# out, so the next reading gives fresh ones, and the mark saying which element it
+# went for — a task that has not acted yet must not open with the previous one's
+# click still highlighted in the agent view.
+FORGET_MARKS_JS = """
+() => {
+  for (const attr of ['data-agent-idx', 'data-agent-clicked'])
+    for (const el of document.querySelectorAll('[' + attr + ']'))
+      el.removeAttribute(attr);
+}
+"""
+
+# Records which element the agent went for, so the next reading can say so. The
+# mark rides on the node rather than on its number, because numbers do not
+# survive a reading — and a click that navigates leaves nothing marked, which is
+# the truth: the thing that was clicked is no longer on screen.
+MARK_CLICKED_JS = """
+el => {
+  for (const prev of document.querySelectorAll('[data-agent-clicked]'))
+    prev.removeAttribute('data-agent-clicked');
+  el.setAttribute('data-agent-clicked', '');
+}
+"""
+
+
+class StaleIndex(LookupError):
+    """An element was addressed from a listing that is no longer the current one.
+
+    Raised rather than clicked: the message is what the model reads back, and it
+    arrives alongside a fresh listing, so a refusal is also the correction.
+    """
 
 
 LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "[::1]", "0.0.0.0")
@@ -195,6 +241,10 @@ class BrowserSession:
         self._sinks: set[FrameSink] = set()
         self._cdp_listener = None
         self._acks: set[asyncio.Task] = set()
+        # What the latest reading found, and where fresh numbers come from.
+        # Empty until the page is read once, so nothing is addressable before.
+        self._addressable: set[int] = set()
+        self._next_index = 0
 
     async def start(self) -> None:
         self._pw = await async_playwright().start()
@@ -245,9 +295,29 @@ class BrowserSession:
                     continue
         return None
 
+    def _element(self, index: int) -> Locator:
+        """Address one element from the listing the model was last given.
+
+        The only way in: an index the latest reading did not report is refused
+        here, so neither caller has to know that a listing expires. An element
+        that has gone keeps whatever `data-agent-idx` it was stamped with and so
+        can still be matched by a selector — which is the wrong click this stops.
+        """
+        if index not in self._addressable:
+            raise StaleIndex(
+                f"Element [{index}] is not on the page as it is now. Use an index "
+                f"from the listing below — it is the only one that still applies."
+            )
+        return self.page.locator(f'[data-agent-idx="{index}"]')
+
     async def click(self, index: int) -> str:
-        loc = self.page.locator(f'[data-agent-idx="{index}"]')
+        loc = self._element(index)
         label = (await loc.inner_text())[:80] if await loc.count() else ""
+        # Marked before the click, not after: a click that navigates detaches the
+        # node, and re-resolving the selector on the new page would mark whatever
+        # inherited the number. Aiming at it is what the overlay reports.
+        with contextlib.suppress(Exception):
+            await loc.first.evaluate(MARK_CLICKED_JS)
         try:
             await loc.first.click(timeout=10000)
         except Exception:
@@ -260,7 +330,7 @@ class BrowserSession:
         return f"Clicked element [{index}] {label!r}"
 
     async def input_text(self, index: int, text: str) -> str:
-        loc = self.page.locator(f'[data-agent-idx="{index}"]')
+        loc = self._element(index)
         await loc.first.fill(text, timeout=10000)
         return f"Typed {text!r} into element [{index}]"
 
@@ -297,11 +367,39 @@ class BrowserSession:
         return gesture.changes_page
 
     # --- observation -------------------------------------------------------
+    async def restart_numbering(self) -> None:
+        """Count from zero again, taking back what the last task left behind.
+
+        A number has to be unique only for as long as something quoting it can
+        still be acted on, and that is the model's transcript — which a new task
+        starts empty. Letting the count run on across tasks is what put [341]
+        [342] [343] on a three-element page, and a small model answers that by
+        inventing [1] and spending its whole budget being refused.
+
+        The "just clicked" mark goes with them: it is the *last* task's click,
+        and the agent view would otherwise open highlighting an element this one
+        has not touched.
+        """
+        self._next_index = 0
+        self._addressable = set()
+        with contextlib.suppress(Exception):
+            await self.page.evaluate(FORGET_MARKS_JS)
+
     async def elements(self) -> list[dict[str, Any]]:
+        """Read the page; what it returns is what may be acted on until the next one.
+
+        Every reading retires the one before it, including a reading that found
+        nothing: whatever the model is still holding then describes a page that
+        has since moved, and acting on it is the mistake being prevented.
+        """
         try:
-            return await self.page.evaluate(COLLECT_JS)
+            reading = await self.page.evaluate(COLLECT_JS, self._next_index)
         except Exception:
-            return []
+            reading = {"next": self._next_index, "elements": []}
+        self._next_index = reading["next"]
+        found = reading["elements"]
+        self._addressable = {el["index"] for el in found}
+        return found
 
     async def screenshot_b64(self) -> str:
         img = await self.page.screenshot(type="jpeg", quality=70)

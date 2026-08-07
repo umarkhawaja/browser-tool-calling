@@ -218,6 +218,13 @@ User      ChatPanel        useAgentSocket        main.ws          router     age
 The number the model reasons about and the DOM attribute are identical — so the
 model points at a number instead of inventing a CSS/XPath selector.
 
+An element keeps its number for as long as it is on the page, and a number is
+never handed on to a different element, so an index from an earlier listing —
+still sitting in the transcript — cannot resolve to something else.
+**`BrowserSession._element(index)`**, the one way in for both `click` and
+`input_text`, raises `StaleIndex` for anything the latest reading did not report;
+the loop hands that message back to the model with a fresh listing attached.
+
 ### Live preview via CDP screencast
 **`BrowserSession.add_frame_sink(on_frame)`** registers a subscriber and, on the
 first one, issues the DevTools command `Page.startScreencast`. Chromium then

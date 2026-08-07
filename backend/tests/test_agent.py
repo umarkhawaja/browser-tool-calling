@@ -8,6 +8,7 @@ import pytest
 
 from app import agent
 from app.agent import SCHEMAS, TOOLS, _format_state, run_agent
+from app.browser import StaleIndex
 from app.llm import LLMError
 
 
@@ -17,6 +18,10 @@ class FakeBrowser:
     def __init__(self):
         self.calls = []
         self._url = "about:blank"
+        self.restarts = 0
+
+    async def restart_numbering(self):
+        self.restarts += 1
 
     async def elements(self):
         return [{"index": 0, "tag": "input", "type": "text", "label": "Search"}]
@@ -271,6 +276,45 @@ async def test_run_agent_can_dismiss_dialog(monkeypatch):
         e for e in events if e["type"] == "action" and e["text"] == "dismiss_dialog"
     ]
     assert dismiss and "cookie/consent" in dismiss[0]["detail"]
+
+
+async def test_a_task_starts_its_element_numbering_from_scratch(monkeypatch):
+    # The transcript a listing is quoted in is per-task, so numbers may start
+    # over per task — and must, or a small page inherits four-digit indices.
+    monkeypatch.setattr(agent, "chat_tools", _scripted([_final("done")]))
+
+    async def emit(e):
+        pass
+
+    browser = FakeBrowser()
+    await run_agent("x", browser, emit)
+    assert browser.restarts == 1
+
+
+async def test_a_refused_index_reaches_the_model_with_a_current_listing(monkeypatch):
+    # A stale index is refused by the browser rather than clicked. That refusal
+    # is only useful if it arrives where the model will read it, next to the
+    # listing it should have used — otherwise it just retries the same index.
+    class Moved(FakeBrowser):
+        async def click(self, index):
+            raise StaleIndex("REFUSED: that number is from an earlier reading.")
+
+    seen = []
+    monkeypatch.setattr(
+        agent,
+        "chat_tools",
+        _scripted([_tool_call("click", {"index": 3}), _final("ok")], seen),
+    )
+
+    async def emit(e):
+        pass
+
+    await run_agent("x", Moved(), emit)
+
+    result = seen[-1][-1]
+    assert result["role"] == "tool"
+    assert "REFUSED" in result["content"]
+    assert "Interactive elements:" in result["content"]
 
 
 async def test_run_agent_handles_unknown_tool(monkeypatch):

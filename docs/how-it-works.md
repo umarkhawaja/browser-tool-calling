@@ -241,6 +241,26 @@ number the model sees and the DOM attribute are the same, so the model never has
 to invent brittle CSS selectors — it points at a number, and Playwright finds
 that exact node.
 
+**The number belongs to the element, not to its place in the list.** An element
+that already has one keeps it, however many times the page is re-read; only new
+elements take a number, from a counter that never goes backwards.
+
+That matters because every old listing is still sitting in the model's
+transcript. If each reading renumbered from `[0]`, an index the model read three
+steps ago would still resolve — to whatever happened to be element 8 *now*. That
+is the nastiest kind of bug: a wrong click that looks perfectly correct in the
+trace. Because numbers stay with their elements, a number from a page the agent
+has left matches nothing, and `BrowserSession` refuses it with a message the
+model reads next to a fresh listing:
+
+> Element [8] is not on the page as it is now. Use an index from the listing
+> below — it is the only one that still applies.
+
+The other half is just as important: re-reading a page that has *not* moved
+leaves every number where it was. An earlier version of this renumbered on every
+reading, and llama3.1 reacted by inventing small indices and spending its entire
+step budget being refused.
+
 ## 6. The supporting machinery
 
 - **Cookie walls** — `go_to_url` and `click` call `dismiss_overlays()`, which

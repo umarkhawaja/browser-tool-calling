@@ -33,6 +33,8 @@ its URL and a numbered list of interactive elements (links, buttons, inputs). \
 Click or type using those indices.
 
 Guidelines:
+- Only use indices from the MOST RECENT listing. Once the page moves the old
+  numbers are refused, and each refusal costs you a step.
 - To search or fill a field: input_text into it, then press_enter (or click a button).
 - To read a page's text, headings, or article body, call extract_text.
 - Cookie/consent dialogs are accepted automatically after you navigate. If a click
@@ -313,6 +315,9 @@ async def run_agent(
     the loop at the next step boundary (a tool call already in flight finishes
     first). Stop still works while paused — cancellation raises inside the wait.
     """
+    # The transcript below is the only thing that quotes an element number, and
+    # it starts empty — so the numbering may, and should, start over with it.
+    await browser.restart_numbering()
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": f"Task: {task}\n\n{await observe(browser, emit)}"},

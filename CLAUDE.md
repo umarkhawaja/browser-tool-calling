@@ -203,6 +203,30 @@ and `click`/`input_text` locate via `[data-agent-idx="N"]` — the model never
 guesses CSS selectors. Any change to element collection must keep the tagging
 and the listing in sync.
 
+**A number belongs to an element, not to a place in the listing.** An element
+already carrying `data-agent-idx` keeps it; only new ones draw from a counter
+that never goes back. Old listings sit in the transcript for the whole run, and
+numbering each one from zero meant an index the model read three steps ago still
+resolved — to whatever happened to be eighth *now*. That is a wrong click that
+reads as a correct one in the trace, which is worse than an error.
+
+The two halves of that are both load-bearing. Re-reading a page that has not
+moved leaves the numbers alone, so the model can act on the listing it was just
+given — an earlier version renumbered on every reading, and llama3.1 responded by
+inventing small indices and burning its whole step budget on refusals. And
+`BrowserSession._element`, the single way in for both `click` and `input_text`,
+raises `StaleIndex` for any index the latest reading did not report — including
+one whose neighbours are still live, since a removed element keeps its attribute
+and would otherwise still match a selector. The refusal reaches the model as the
+tool result, next to a fresh listing, so it is also the correction.
+
+That is why the agent view's "just clicked" mark rides on the DOM node
+(`data-agent-clicked`, set before the click and reported by `COLLECT_JS` as
+`clicked`) rather than on a number: the number is gone by the time the overlay
+draws. A click that navigates leaves nothing marked, which is the truth — and so
+does a new task, because `restart_numbering` takes that mark off the page along
+with the numbers rather than leaving the last task's click highlighted.
+
 **Consent dialogs** are auto-accepted after every navigation and retried once on
 a failed click. `CONSENT_LABELS` are matched by accessible name, **exactly and
 case-insensitively**, precisely so "I do not agree" / "Reject" are never clicked
