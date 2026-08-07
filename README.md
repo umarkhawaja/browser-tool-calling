@@ -86,10 +86,17 @@ Environment variables read by the backend:
 | `OLLAMA_URL`   | `http://localhost:11434`  | Ollama server URL                |
 | `MAX_STEPS`    | `15`                      | Max actions per task             |
 | `BACKEND_PORT` | `8008`                    | Port the API/WebSocket listens on |
+| `ALLOWED_ORIGINS` | dev frontend, comma-separated | Origins allowed to open the WebSocket |
 
 Routing only has to answer "chat or browse?", so it can run on a much smaller
 model than the agent — `ROUTER_MODEL=llama3.2:1b` shaves latency off every
 message you send.
+
+A WebSocket handshake ignores the same-origin policy, so the backend refuses one
+carrying an `Origin` it does not recognise — otherwise any page open in any
+browser could connect and drive the agent. The default allows the dev frontend
+on `localhost` and `127.0.0.1`, following `FRONTEND_PORT`; serving the UI from
+anywhere else means listing that origin.
 
 The frontend targets `ws://localhost:8008/ws`; override with `VITE_WS_URL`.
 
