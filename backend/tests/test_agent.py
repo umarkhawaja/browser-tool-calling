@@ -4,8 +4,10 @@ without Ollama or a real Chromium."""
 import asyncio
 import contextlib
 
+import pytest
+
 from app import agent
-from app.agent import _format_state, run_agent
+from app.agent import SCHEMAS, TOOLS, _format_state, run_agent
 from app.llm import LLMError
 
 
@@ -99,6 +101,57 @@ def test_format_state_lists_elements():
 
 def test_format_state_handles_no_elements():
     assert "(none detected)" in _format_state("about:blank", [])
+
+
+# --- the tool table --------------------------------------------------------
+# `TOOLS` is meant to be the only place a tool is written down. These guard that:
+# a row that declares an action but does not run it, or a handler that never
+# reaches Ollama, fails here rather than at the model.
+def test_schemas_are_derived_from_the_table():
+    assert [s["function"]["name"] for s in SCHEMAS] == [t.name for t in TOOLS]
+    for schema in SCHEMAS:
+        assert schema["type"] == "function"
+        assert set(schema["function"]) == {"name", "description", "parameters"}
+        assert "run" not in schema, "the handler must not leak into what Ollama gets"
+
+
+def _sample_args(schema):
+    """Plausible arguments for a tool, taken from its own schema.
+
+    Type-driven on purpose: a tool added to `TOOLS` is exercised by the test
+    below without anyone having to add it to a second list here.
+    """
+    args = {}
+    for name, spec in schema["function"]["parameters"]["properties"].items():
+        if spec.get("enum"):
+            args[name] = spec["enum"][0]
+        elif spec.get("type") == "integer":
+            # A string, so the entry's own int() coercion is exercised too.
+            args[name] = "0"
+        else:
+            args[name] = "x"
+    return args
+
+
+@pytest.mark.parametrize("tool", TOOLS, ids=lambda t: t.name)
+async def test_every_declared_tool_reaches_the_browser(tool, monkeypatch):
+    monkeypatch.setattr(
+        agent,
+        "chat_tools",
+        _scripted([_tool_call(tool.name, _sample_args(tool.schema)), _final("ok")]),
+    )
+    events = []
+
+    async def emit(e):
+        events.append(e)
+
+    browser = FakeBrowser()
+    await run_agent("x", browser, emit)
+
+    assert browser.calls, f"{tool.name} is declared but never reaches the browser"
+    action = next(e for e in events if e["type"] == "action" and e["text"] == tool.name)
+    assert "Action failed" not in action["detail"]
+    assert "Unknown tool" not in action["detail"]
 
 
 # --- run_agent -------------------------------------------------------------

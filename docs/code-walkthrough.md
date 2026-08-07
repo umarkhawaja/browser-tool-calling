@@ -118,10 +118,12 @@ Example: the user types **"check top stories on bbc"** and presses Enter.
    initial page (URL + numbered elements) is seeded right into the first message.
    Then it loops up to `MAX_STEPS` (15). Each iteration:
 
-   1. **Ask the model, with tools** — `message = await chat_tools(messages, TOOLS)`.
-      - **`agent.TOOLS`** is the list of Ollama function schemas (one per action:
-        `go_to_url`, `click`, `input_text`, `press_enter`, `scroll`,
-        `extract_text`, `dismiss_dialog`).
+   1. **Ask the model, with tools** — `message = await chat_tools(messages, SCHEMAS)`.
+      - **`agent.TOOLS`** is the table of everything the agent can do, one `Tool`
+        per action (`go_to_url`, `click`, `input_text`, `press_enter`, `scroll`,
+        `extract_text`, `dismiss_dialog`). Each holds the Ollama function schema
+        *and* the handler that runs it. **`agent.SCHEMAS`** is the schema half,
+        derived from that table, and is what Ollama is actually sent.
       - **`llm.chat_tools(messages, tools, on_token)`** POSTs to Ollama
         `/api/chat` with the `tools` field, `stream:true`, `temperature:0.1` and
         `num_ctx:8192`, reassembles the NDJSON chunks into one assistant message,
@@ -136,17 +138,21 @@ Example: the user types **"check top stories on bbc"** and presses Enter.
    4. If there is content alongside the call, `emit` it as a `thought`.
    5. **Run each tool call.** For every `tool_calls[i]`:
       - `name = function.name`, `args = _parse_args(function.arguments)`.
-      - `result = await _execute(browser, name, args)`.
-      - **`agent._execute(browser, name, args)`** maps the tool name to a method:
-        | tool | calls |
+      - `result = await TOOLS[name].run(browser, args)`, via the `_BY_NAME`
+        lookup. Each row's `run` is what maps the tool onto the browser, and
+        owns the coercion its own schema implies:
+        | tool | runs |
         |------|-------|
-        | `go_to_url` | `browser.go_to_url(url)` |
-        | `click` | `browser.click(index)` |
-        | `input_text` | `browser.input_text(index, text)` |
+        | `go_to_url` | `browser.go_to_url(args["url"])` |
+        | `click` | `browser.click(int(args["index"]))` |
+        | `input_text` | `browser.input_text(int(args["index"]), args.get("text", ""))` |
         | `press_enter` | `browser.press_enter()` |
-        | `scroll` | `browser.scroll(direction)` |
+        | `scroll` | `browser.scroll(args.get("direction", "down"))` |
         | `extract_text` | `browser.extract_text()` |
-        | `dismiss_dialog` | `browser.dismiss_overlays()` |
+        | `dismiss_dialog` | `browser.dismiss_overlays() or "No dialog found."` |
+
+        A name that is in no row comes back as `Unknown tool 'x'.` — a result the
+        model reads and corrects from, not an exception.
       - `emit` an `action` event + a fresh `screenshot`
         (`browser.screenshot_b64()`), then append a **`role:"tool"`** message
         whose content is the result **plus the new page state** (`_observe`), so
@@ -190,9 +196,9 @@ User      ChatPanel        useAgentSocket        main.ws          router     age
  │           │                    │                  │─add_frame_sink──────────────────────────►│              │
  │           │                    │                  │─run_agent(task, browser, emit, gate)────►│              │
  │           │                    │                  │              LOOP:            │              │              │
- │           │                    │                  │              │─chat_tools(messages, TOOLS)─────────────►│
+ │           │                    │                  │              │─chat_tools(messages, SCHEMAS)───────────►│
  │           │                    │                  │              │◄──tool_calls:[click{index:8}]────────────│
- │           │                    │◄─action──────────│◄─emit────────│─_execute()──►browser.click(8)             │
+ │           │                    │◄─action──────────│◄─emit────────│─TOOLS[click].run()──►browser.click(8)     │
  │           │                    │◄─screenshot──────│◄─emit────────│─append role:"tool" (result + new state)   │
  │           │  (frames stream)   │◄─screenshot──────│◄──on_frame (CDP screencast)─│              │              │
  │           │                    │                  │              … repeat …      │              │              │
@@ -285,7 +291,7 @@ action.
 - `main.lifespan(app)` — closes the browser on shutdown.
 - `main.ws(sock)` — the WebSocket loop; inner `do_turn(task)` orchestrates a chat reply or a browse run.
 - `router.route(message)` → `{mode}` — LLM classifier; `router.chat_reply(message, on_token)` — streams a chat answer.
-- `agent.run_agent(task, browser, emit)` — the tool-calling loop; `agent.TOOLS` — the function schemas; `agent._format_state(url, elements)`; `agent._observe(browser)`; `agent._execute(browser, name, args)`; `agent._parse_args(raw)`; `agent._looks_like_tool_json(content)`.
+- `agent.run_agent(task, browser, emit)` — the tool-calling loop; `agent.TOOLS` — the table of `Tool(name, schema, run)`, one row per action; `agent.SCHEMAS` — the schema half, derived, sent to Ollama; `agent._format_state(url, elements)`; `agent._observe(browser)`; `agent._parse_args(raw)`; `agent._looks_like_tool_json(content)`.
 - `llm.chat_tools(messages, tools)` — Ollama call with `tools` → assistant message with `tool_calls` (raises `LLMError`).
 - `llm.chat_json(messages)` — Ollama call in JSON mode → parsed dict; used by the router.
 - `browser.BrowserSession`:
@@ -299,10 +305,11 @@ action.
 
 ## 8. Talking points for the meeting
 
-1. **Native tool calling.** We pass Ollama typed function schemas (`agent.TOOLS`)
-   via `chat_tools`; llama3.1 returns a structured `tool_calls` array, and
-   `_execute` dispatches on the tool name. The model finishes by answering with
-   *no* tool call.
+1. **Native tool calling.** We pass Ollama typed function schemas (`agent.SCHEMAS`)
+   via `chat_tools`; llama3.1 returns a structured `tool_calls` array, and the
+   name is looked up straight back in `agent.TOOLS` — the same table the schema
+   came from, so there is no dispatch layer to keep in sync. The model finishes
+   by answering with *no* tool call.
 2. **The model is "blind" to the image.** It acts on the *text* element list
    (`_format_state`), fed back inside each `role:"tool"` result — not the
    screenshot. The screenshot is purely for the human.
