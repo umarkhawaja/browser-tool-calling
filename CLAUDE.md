@@ -10,11 +10,13 @@ Python/FastAPI backend + React/Vite frontend, connected by a single WebSocket.
 
 `README.md` covers setup/usage; `docs/how-it-works.md` and
 `docs/code-walkthrough.md` cover the design in depth and are worth reading
-before non-trivial changes. `BACKLOG.md` lists the known gaps with enough detail
-to pick any of them up cold — check it before proposing new work; *Working the
-backlog* below covers how its entries are written and worked. It is a local
-working note, gitignored on purpose: it is a plan rather than a description of
-the code, and versioning it would put every reordering into the history.
+before non-trivial changes. **GitHub issues are the backlog** — every known gap
+is filed with enough detail to pick it up cold, labelled `p1`/`p2`/`p3` by how
+soon it will hurt. Check them before proposing new work (`gh issue list --label
+p1`); *Working the backlog* below covers how issues are written and worked.
+
+There was a `BACKLOG.md`; it is gone. A tracker that closes an item when its PR
+merges beats a file someone has to remember to prune.
 
 ## Commands
 
@@ -52,7 +54,7 @@ would really arrive in, and flagging those characters is pure noise.
 
 ## Working the backlog
 
-Entries are worked **one at a time, one branch each** — that independence is what
+Issues are worked **one at a time, one branch each** — that independence is what
 makes any of them reviewable, or revertable, on its own.
 
 **Writing one.** Every task must be a *vertical slice*: shippable end to end on
@@ -60,39 +62,76 @@ its own branch, with nothing else needing to land alongside it. Touching
 `browser.py`, `agent.py`, the WebSocket contract and the preview pane in one task
 is fine — that is the full depth of a single behaviour. Touching one layer across
 many behaviours ("add types to the backend", "wire up error handling everywhere",
-"refactor all the tools") is horizontal, and must be split before it goes in the
-list. Three questions settle it: can it merge alone without breaking `main`, can
-a reviewer tell from the diff whether it worked, and does finishing it change
+"refactor all the tools") is horizontal, and must be split before it is filed.
+Three questions settle it: can it merge alone without breaking `main`, can a
+reviewer tell from the diff whether it worked, and does finishing it change
 something observable? Any *no* and it is not a task yet — restate it as the
-smallest change that passes all three and file the rest separately. Prefer
-several thin, boring entries over one that has to be coordinated. A pure
-restructuring answers the third question at the interface instead; see *Code
-shape*.
+smallest change that passes all three and file the rest separately, or label it
+`not-a-task` and say what would make it one. Prefer several thin, boring issues
+over one that has to be coordinated. A pure restructuring answers the third
+question at the interface instead; see *Code shape*.
+
+Every issue carries a **Done when:** line stating the observable result. An
+issue without one is not ready to work — write it first, because it is what
+tells you the branch is finished rather than merely plausible.
 
 **Working one.**
 
-- **Branch per task.** Cut a fresh branch from an up-to-date `main` before
-  touching anything: `fix/<n>-<slug>` for a backlog number (`fix/2-ws-origin`),
+- **Branch per issue.** Cut a fresh branch from an up-to-date `main` before
+  touching anything: `fix/<issue>-<slug>` (`fix/3-ws-origin` for issue #3),
   `feature/<slug>` for anything else. Never start a second task on a branch that
   already carries one, and never work directly on `main`.
-- **No passengers.** Do not fold in a neighbouring entry, an unrelated cleanup or
+- **No passengers.** Do not fold in a neighbouring issue, an unrelated cleanup or
   a drive-by rename, however adjacent. If the work uncovers a second problem,
-  file it as a new entry and leave it.
-- **Confirm the entry is still real** before writing code — read the cited files
-  and check the described behaviour still holds. The backlog is maintained by
-  hand and can drift ahead of or behind the code.
-- **Finish the entry, not the easy half.** Done means the fix, its tests, and the
+  file a new issue and leave it.
+- **Confirm the issue is still real** before writing code — read the cited files
+  and check the described behaviour still holds. Issues are written by hand and
+  can drift ahead of or behind the code; say so in a comment when one has.
+- **Finish the issue, not the easy half.** Done means the fix, its tests, and the
   doc updates it implies (`CLAUDE.md`, `docs/`, `main.py`'s protocol docstring)
-  are all in the branch, and the `BACKLOG.md` entry is deleted as the branch is
-  finished. Since the backlog is untracked it survives the branch switch on its
-  own; a fix that leaves its entry standing reads as unfixed next session.
+  are all in the branch, and the PR says `Closes #<issue>` so merging closes it.
 - **Green before done.** `./test.sh` and `./lint.sh` both pass, and anything with
   a visible surface is verified in the running app rather than reasoned about.
 - **Commit at task granularity.** One coherent commit (or a short ordered series)
-  per branch, saying what the entry was and why the fix takes the shape it does.
+  per branch, saying what the issue was and why the fix takes the shape it does.
 - **Stop at the boundary.** If a task genuinely cannot be done without another
   landing first, say so and stop rather than quietly widening the branch.
   Pushing, merging or opening a PR happens only when asked.
+
+## Test-driven development
+
+**Strict TDD is the default, not an aspiration.** The order is not negotiable:
+
+1. **Write the failing test first.** It encodes the *observable* result — the
+   issue's **Done when:** line is usually the test.
+2. **Watch it fail, for the right reason.** A test that has never failed proves
+   nothing; one failing on an import error or a typo proves less. Read the
+   assertion message and check it describes the actual defect.
+3. **Write the least code that passes it.** No speculative generality, no
+   adjacent improvements riding along.
+4. **Refactor with the test green**, running it as you go.
+
+**Exempt — a closed list, not a judgement call:**
+
+- documentation and comments;
+- configuration, dependency pins and scripts with no logic to assert on;
+- pure restructurings whose behaviour is *already* covered — the existing suite
+  is the test, and it must be green before and after;
+- throwaway spikes, which are deleted rather than merged.
+
+Everything else is in scope, **including "obvious" one-liners** — those are
+exactly where a skipped test hides an inverted condition. Widening this list is
+a change to CLAUDE.md, not something to decide mid-task.
+
+**A test you did not watch fail is not a guard.** When a change fixes something
+the suite did not catch, break the fix deliberately and confirm the new test
+goes red, then restore it. Say so in the PR: "confirmed failing before the fix"
+is a claim a reviewer can trust, and it catches the tautological assertion that
+passes against any implementation.
+
+Prefer a test at the level the defect lives. A bug in tool dispatch belongs in
+`test_agent.py` driving `run_agent`, not in a unit test of a private helper that
+will be renamed next month. Test through the seam the rest of the code uses.
 
 ## Architecture
 
@@ -220,6 +259,9 @@ scripted `chat_tools` returns canned assistant messages), so `pytest` runs with
 no Ollama and no Chromium. Follow that pattern — no test should need either.
 `asyncio_mode = "auto"` is set, so async tests need no marker. Frontend tests
 use vitest + Testing Library under jsdom.
+
+That is *how* a test is written here; *when* is settled by *Test-driven
+development* above — the failing test comes first.
 
 ## Configuration
 
