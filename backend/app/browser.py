@@ -19,7 +19,7 @@ from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from playwright.async_api import Browser, Page, async_playwright
+from playwright.async_api import Browser, Locator, Page, async_playwright
 
 from app.config import BROWSER_LOCALE
 
@@ -89,11 +89,15 @@ CONSENT_LABELS = (
 )
 
 
-# Takes every number back off the page, so the next reading hands out fresh ones.
-STRIP_INDICES_JS = """
+# Takes back everything the last task left on the page: the numbers it was handed
+# out, so the next reading gives fresh ones, and the mark saying which element it
+# went for — a task that has not acted yet must not open with the previous one's
+# click still highlighted in the agent view.
+FORGET_MARKS_JS = """
 () => {
-  for (const el of document.querySelectorAll('[data-agent-idx]'))
-    el.removeAttribute('data-agent-idx');
+  for (const attr of ['data-agent-idx', 'data-agent-clicked'])
+    for (const el of document.querySelectorAll('[' + attr + ']'))
+      el.removeAttribute(attr);
 }
 """
 
@@ -291,7 +295,7 @@ class BrowserSession:
                     continue
         return None
 
-    def _element(self, index: int):
+    def _element(self, index: int) -> Locator:
         """Address one element from the listing the model was last given.
 
         The only way in: an index the latest reading did not report is refused
@@ -364,18 +368,22 @@ class BrowserSession:
 
     # --- observation -------------------------------------------------------
     async def restart_numbering(self) -> None:
-        """Count from zero again, taking the numbers already handed out back.
+        """Count from zero again, taking back what the last task left behind.
 
         A number has to be unique only for as long as something quoting it can
         still be acted on, and that is the model's transcript — which a new task
         starts empty. Letting the count run on across tasks is what put [341]
         [342] [343] on a three-element page, and a small model answers that by
         inventing [1] and spending its whole budget being refused.
+
+        The "just clicked" mark goes with them: it is the *last* task's click,
+        and the agent view would otherwise open highlighting an element this one
+        has not touched.
         """
         self._next_index = 0
         self._addressable = set()
         with contextlib.suppress(Exception):
-            await self.page.evaluate(STRIP_INDICES_JS)
+            await self.page.evaluate(FORGET_MARKS_JS)
 
     async def elements(self) -> list[dict[str, Any]]:
         """Read the page; what it returns is what may be acted on until the next one.

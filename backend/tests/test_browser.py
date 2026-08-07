@@ -71,15 +71,15 @@ class FakePage:
         self.filled = []
         self.marked = []
         self.bases = []
-        self.stripped = 0
+        self.forgot = []
         self._readings = list(readings)
 
     def locator(self, selector):
         return FakeLocator(self, selector)
 
     async def evaluate(self, script, arg=None):
-        if arg is None:  # the only argument-less pass is stripping the numbers
-            self.stripped += 1
+        if arg is None:  # the only argument-less pass is the one that forgets
+            self.forgot.append(script)
             return None
         self.bases.append(arg)
         found = self._readings.pop(0) if self._readings else []
@@ -241,9 +241,21 @@ async def test_numbering_starts_over_for_a_new_task():
     assert s.page.bases == [0, 3], "numbers climb within a task"
 
     await s.restart_numbering()
-    assert s.page.stripped == 1, "elements must lose the numbers they carry"
+    assert len(s.page.forgot) == 1, "elements must lose the numbers they carry"
     await s.elements()
     assert s.page.bases == [0, 3, 0]
+
+
+async def test_restarting_forgets_the_click_mark_along_with_the_numbers():
+    # The mark says "the agent just went for this one", and a task that has not
+    # run yet has gone for nothing — so the agent view must not open on the
+    # previous task's click. The mark rides on the node, so only the page can be
+    # asked to drop it; what the script then does is checked in real Chromium.
+    s = _session(readings=[[0, 1, 2]])
+    await s.elements()
+    await s.click(1)
+    await s.restart_numbering()
+    assert "data-agent-clicked" in s.page.forgot[0]
 
 
 async def test_nothing_is_addressable_between_restarting_and_re_reading():

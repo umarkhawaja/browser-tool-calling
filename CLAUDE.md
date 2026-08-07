@@ -223,7 +223,9 @@ tool result, next to a fresh listing, so it is also the correction.
 That is why the agent view's "just clicked" mark rides on the DOM node
 (`data-agent-clicked`, set before the click and reported by `COLLECT_JS` as
 `clicked`) rather than on a number: the number is gone by the time the overlay
-draws. A click that navigates leaves nothing marked, which is the truth.
+draws. A click that navigates leaves nothing marked, which is the truth — and so
+does a new task, because `restart_numbering` takes that mark off the page along
+with the numbers rather than leaving the last task's click highlighted.
 
 **Consent dialogs** are auto-accepted after every navigation and retried once on
 a failed click. `CONSENT_LABELS` are matched by accessible name, **exactly and
