@@ -269,9 +269,13 @@ browser, routing and the model client. Two pieces are worth knowing:
   nothing else**: `SCHEMAS` (what Ollama is sent) and the name lookup are both
   derived from the table, and each row's `run` owns the coercion its own schema
   implies. A name in no row comes back to the model as `Unknown tool 'x'.`
-  rather than raising. `test_every_declared_tool_reaches_the_browser` is the
-  guard — it walks `TOOLS` and drives each row through the loop, so a schema
-  with no working handler fails there instead of at the model.
+  rather than raising, but two rows *sharing* a name raise at import — that one
+  fails silently otherwise, leaving the earlier row dead while Ollama is still
+  told the tool exists twice. `test_every_declared_tool_reaches_the_browser` is
+  the other guard: it walks `TOOLS` and drives each row through the loop with
+  arguments built from that row's own schema, asserting exactly one browser
+  call, so a schema with no handler — or one wired to the wrong method — fails
+  there instead of at the model.
 
 On the frontend, pure logic lives in `src/lib/` so it can be tested without
 rendering: `pageInput.js` (event → protocol mapping, coordinate scaling) and

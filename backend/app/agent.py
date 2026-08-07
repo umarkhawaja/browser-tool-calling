@@ -50,12 +50,19 @@ Guidelines:
 Run = Callable[[BrowserSession, dict[str, Any]], Awaitable[str]]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Tool:
     """One agent capability: what the model is told, and what running it does.
 
     Both halves live in the same `TOOLS` entry so they cannot drift. The model
     only ever sees `schema`; nothing outside this module needs `run`.
+
+    `eq=False` keeps identity equality and hashing. The generated versions would
+    read every field, and `schema` is a dict — so a `Tool` would look hashable
+    and raise the moment anyone put one in a set. Rows are singletons defined
+    once below; identity is the comparison that means anything. Note `frozen`
+    only protects the fields themselves: `schema` is still a mutable dict, and
+    `SCHEMAS` holds the very same objects.
     """
 
     name: str
@@ -153,6 +160,15 @@ TOOLS: list[Tool] = [
 ]
 
 _BY_NAME: dict[str, Tool] = {tool.name: tool for tool in TOOLS}
+
+if len(_BY_NAME) != len(TOOLS):
+    # Two rows sharing a name is the copy-paste slip "just add a row" invites,
+    # and it fails quietly: the lookup keeps the last one, so the earlier row is
+    # dead while Ollama is still told the tool exists twice.
+    raise ValueError(
+        f"duplicate name in TOOLS: {[t.name for t in TOOLS]} has "
+        f"{len(TOOLS)} rows but {len(_BY_NAME)} distinct names"
+    )
 
 # What actually goes over the wire to Ollama — the schemas only, derived rather
 # than maintained, so the table above stays the single source.

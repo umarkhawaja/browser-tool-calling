@@ -148,7 +148,11 @@ async def test_every_declared_tool_reaches_the_browser(tool, monkeypatch):
     browser = FakeBrowser()
     await run_agent("x", browser, emit)
 
-    assert browser.calls, f"{tool.name} is declared but never reaches the browser"
+    # Exactly one: zero means the row declares an action it never runs, and more
+    # than one means it dispatched somewhere it shouldn't have as well.
+    assert len(browser.calls) == 1, (
+        f"{tool.name} drove the browser {len(browser.calls)} times: {browser.calls}"
+    )
     action = next(e for e in events if e["type"] == "action" and e["text"] == tool.name)
     assert "Action failed" not in action["detail"]
     assert "Unknown tool" not in action["detail"]
