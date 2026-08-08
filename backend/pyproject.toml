@@ -28,6 +28,9 @@ packages = ["app"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# `app` is importable from the editable install; `tools/` is not a package, and
+# the fixture site and grading in tools/browse_eval.py are asserted by the suite.
+pythonpath = ["."]
 
 [tool.ruff]
 line-length = 90
