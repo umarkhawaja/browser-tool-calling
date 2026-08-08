@@ -23,7 +23,7 @@ from typing import Any, Callable
 
 from app.browser import BrowserSession
 from app.config import MAX_STEPS
-from app.llm import LLMError, chat_tools
+from app.llm import LLMError, chat_tools, fit_to_context
 
 SYSTEM_PROMPT = """You are a web-browsing agent that controls a real web browser \
 to accomplish the user's task.
@@ -332,7 +332,10 @@ async def run_agent(
             messages.append(await _wait_for_human(gate, browser, emit))
 
         try:
-            message = await chat_tools(messages, SCHEMAS, on_token)
+            # `messages` is the full record and keeps growing; what the model is
+            # shown is trimmed to the window each step, because otherwise Ollama
+            # does the trimming itself, from the front, without telling anyone.
+            message = await chat_tools(fit_to_context(messages), SCHEMAS, on_token)
         except LLMError as e:
             await emit({"type": "error", "text": str(e)})
             return

@@ -172,14 +172,44 @@ running until the model answers in plain text or hits `MAX_STEPS` (15). The
 `messages` list grows each turn, so the model remembers what it already tried.
 
 ```
-    ┌────────────────────────────────────────────────┐
-    │ 1. ask:   chat_tools(messages, SCHEMAS)          │◄── llama3.1
-    │ 2. call:  message.tool_calls → {name, arguments} │
-    │ 3. act:   TOOLS[name].run(browser, args)         │──► Chromium
-    │ 4. feed:  role:"tool" result + new page state    │
-    └────────────────────────┬───────────────────────┘
+    ┌────────────────────────────────────────────────────┐
+    │ 1. ask:   chat_tools(fit_to_context(messages), …)   │◄── llama3.1
+    │ 2. call:  message.tool_calls → {name, arguments}    │
+    │ 3. act:   TOOLS[name].run(browser, args)            │──► Chromium
+    │ 4. feed:  role:"tool" result + new page state       │
+    └────────────────────────┬───────────────────────────┘
                             │ repeat until a plain-text answer (no tool_calls)
 ```
+
+### Why it does not simply remember everything
+
+Growing forever is not an option: the model's context window (`num_ctx`, 8192
+tokens) is finite, and each turn adds a page listing plus as much as 4000
+characters of extracted text. Ollama enforces the window by discarding messages
+from the **front**, and it says nothing when it does — so the first things lost
+are the system prompt and the task itself. The agent then keeps browsing,
+fluently, having forgotten what it was asked. That failure is invisible in the
+trace, which is what makes it worth the machinery.
+
+So `fit_to_context` chooses what to forget, and forgets from the right end. The
+system prompt and the task are pinned. The newest turn is kept exactly as it is,
+because its listing is what the model is about to click on. Every older turn
+collapses to a single line — the result's first sentence, without its page
+listing — and only then does whatever budget remains buy recent turns back to
+full text. Old listings are the bulk, and they are the safest thing to lose:
+their indices are refused by the browser anyway, so all they can do is tempt the
+model into a stale click.
+
+That order was not the first guess. Keeping the last three turns whole *first*
+sounds right and measures badly: on a page as heavy as Hacker News three
+verbatim turns fill the window between them, so a 15-step run arrived at step 15
+with no trace of steps 1–12 at all — free to repeat work it had already done. A
+summary line costs a twentieth of the turn it stands for, so every step buys one
+before any step buys its full text back.
+
+The full transcript stays in memory. Trimming applies only to the copy handed to
+the model, and is redone every step, so the window of full detail slides along
+with the run.
 
 ## 4. How it recognizes commands (chat vs. browse)
 
