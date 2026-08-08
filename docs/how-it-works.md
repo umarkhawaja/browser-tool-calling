@@ -352,6 +352,62 @@ The client shows `token` deltas in a provisional bubble and replaces it the
 moment the authoritative `answer`/`thought`/`action` arrives, so nothing is ever
 rendered twice.
 
+## 6d. Checking that all of it fits together
+
+The pytest suite fakes both ends — a scripted `chat_tools` for the model, a
+`FakeBrowser` that records calls — so it runs anywhere, in half a second, without
+Ollama or Chromium. The cost of that is the thing fakes cannot show you: they
+agree with the code by construction. Everything in sections 3 to 5 has only ever
+been exercised *separately*, against a fake that says yes.
+
+`tools/browse_eval.py` closes that seam the way `routing_eval.py` closes the
+routing one — opt-in, live, and scored:
+
+```bash
+cd backend && ./.venv/bin/python tools/browse_eval.py
+```
+
+It serves a small fixture site on a free loopback port, hands llama3.1 a task
+naming that URL, and drives the real loop through a real headless Chromium. One
+case reads a price two clicks past the landing page; another has to fill in a form
+and submit it, because the count it asks for does not exist until the query is
+made. Both facts sit *behind* the interaction they test, so an answer is proof
+that the whole chain worked: consent wall dismissed, listing rendered, index
+clicked, text extracted, answer written. Each case names a decoy too — the other
+product's price, one page over — so reading the wrong page and reporting it
+confidently fails instead of passing on a substring. Both the fact and the decoy
+are matched on whole runs of digits rather than as bare substrings: `£4200` is
+not `£42` and `17 units` is not `7`, and a plain `in` test would wave through the
+misread number the eval exists to catch.
+
+The consent wall is the one place where the fixture is written against the *code*
+rather than against a plausible web page. §6's rule that `CONSENT_LABELS` are
+matched exactly has no unit test — faking a browser cannot show it — so the wall's
+two buttons are labelled to make a loosened match visible: accept is `OK`, which
+is on the list and matches exactly, and reject is `I do not agree`, the phrase
+`dismiss_overlays` names as the one it must never hit. `Agree` reaches that phrase
+as a substring and sits *earlier* in the list than `OK`, so dropping `exact=True`
+clicks reject first, which blanks the page and fails the case. Pick those labels
+carelessly and a loosened match still lands on accept, the eval stays green, and
+the coverage is imaginary — `test_loosening_the_consent_match_to_a_substring_would_wreck_the_landing_page`
+is what holds the three conditions together.
+
+What it prints is the run: every action with its result, the answer, then
+`✓ pass 4 actions, 0 refused, 12.4s`. The refusal count is the interesting half.
+A pass that spent four steps being told an index was stale is a different result
+from a clean one, and the same eval is where you would see a change to the
+numbering or the element limit start to cost steps.
+
+Grading and the fixture site are themselves unit-tested (`tests/test_browse_eval.py`),
+which is less circular than it sounds: a typo in the fixture HTML is
+indistinguishable from a model failure when you are reading a live trace, so the
+suite asserts that each case's fact really is on the site, that its decoy is too,
+and that neither is legible on the landing page. Those three run over the page's
+*text*, markup stripped, and ask through `says` — the same predicate that grades
+the answer. Asking a second way is how the guard and the grader drift apart: a
+fixture repriced to `£420` satisfies a plain `"42" in site` while failing every
+live run, which is the failure the guard was written to prevent.
+
 ## 7. The honest caveat
 
 Native tool calling gives us typed, structured calls — but the *decision* is

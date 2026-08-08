@@ -141,6 +141,28 @@ messages), so no test needs Ollama or Chromium — follow that.
 `asyncio_mode = "auto"` is set, so async tests need no marker. Frontend tests use
 vitest + Testing Library under jsdom.
 
+**What the fakes cannot tell you** lives in `tools/browse_eval.py`, the browse
+counterpart to `routing_eval.py`: whole tasks driven through a real headless
+Chromium and a live Ollama against a fixture site served on loopback, scored
+pass/fail. Fakes agree with the code by construction, so native tool calling,
+`data-agent-idx` clicking, consent dismissal and the final answer have only ever
+been exercised separately — that is the seam it covers.
+
+```bash
+cd backend && ./.venv/bin/python tools/browse_eval.py         # all cases, ~20s
+cd backend && ./.venv/bin/python tools/browse_eval.py stock   # one by name
+```
+
+It stays opt-in, out of `pytest`, for the reason above. Two of its halves are
+*not* live, and are in the suite (`tests/test_browse_eval.py`, which imports it —
+hence `pythonpath = ["."]`): grading a finished run's events, and the fixture site
+saying what the cases ask for. That second one matters more than it looks. A typo
+in the fixture HTML is indistinguishable from a model failure when you are reading
+a live run, so each case's expected fact is asserted to be *on* the site, its
+decoy too, and neither on the landing page — a task answerable without a click
+measures nothing. Add a case by adding one row to `CASES`, and put its fact behind
+the interaction the case exists to exercise.
+
 ## Architecture
 
 **Everything flows over one WebSocket** (`/ws` in `backend/app/main.py`). The

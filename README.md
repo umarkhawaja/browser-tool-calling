@@ -74,6 +74,25 @@ Open http://localhost:5173 and ask the agent something, e.g.
 ./lint.sh          # ruff + eslint; pass --fix to apply what can be fixed
 ```
 
+Those fake both the model and the browser, so they need neither Ollama nor
+Chromium. To check the whole stack really fits together — tool calling, clicking
+by index, cookie walls, the answer at the end — there is an opt-in eval that
+drives real tasks through a real browser against a fixture site on loopback:
+
+```bash
+cd backend && ./.venv/bin/python tools/browse_eval.py     # needs Ollama + Chromium
+```
+
+```
+  price  Go to http://127.0.0.1:61397 and tell me the price of the Nimbus 3000.
+    · go_to_url     Navigated to http://127.0.0.1:61397/; Accepted a cookie/consent…
+    · click         Clicked element [0] 'Products'
+    · click         Clicked element [3] 'Nimbus 3000'
+    · extract_text  Nimbus 3000 Price: £42 Made in Bristol. Back to products
+    answer          The price of the Nimbus 3000 is £42.
+    ✓ pass  4 actions, 0 refused, 12.4s
+```
+
 ## Configuration
 
 Environment variables read by the backend:
@@ -183,6 +202,7 @@ frontend/
     index.css              the console: token system + layout
   eslint.config.js         lint rules
 backend/tools/routing_eval.py  scores the chat/browse classifier (needs Ollama)
+backend/tools/browse_eval.py   whole tasks vs. a fixture site (needs Ollama + Chromium)
 lint.sh                    run both linters
 dev.sh                     run backend + frontend together
 test.sh                    run both test suites
