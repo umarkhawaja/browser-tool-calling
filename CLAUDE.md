@@ -92,6 +92,14 @@ tells you the branch is finished rather than merely plausible.
   are all in the branch, and the PR says `Closes #<issue>` so merging closes it.
 - **Green before done.** `./test.sh` and `./lint.sh` both pass, and anything with
   a visible surface is verified in the running app rather than reasoned about.
+  `.github/workflows/ci.yml` runs the first half for you — it calls those two
+  scripts *unchanged* on a clean runner, plus `npm run build`, and shows up as
+  `CI / green` on every PR and every push to `main`. Two things it is not. It is
+  **advisory**: this is a private repo on a free plan, where branch protection
+  and rulesets both answer `403`, so nothing stops a red branch merging except
+  reading the check. And it can only ever cover the *first* half — no runner
+  looks at the page, so a green check is not the rule, only the cheap part of
+  it. The second half stays yours.
 - **Commit at task granularity.** One coherent commit (or a short ordered series)
   per branch, saying what the issue was and why the fix takes the shape it does.
 - **Stop at the boundary.** If a task genuinely cannot be done without another

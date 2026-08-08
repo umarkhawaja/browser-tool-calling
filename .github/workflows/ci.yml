@@ -1,0 +1,73 @@
+# Runs the same two scripts a contributor is held to, on a clean machine.
+#
+# The steps deliberately do not restate what lint.sh and test.sh do: one
+# definition of green, checked in one place. Anything this workflow spells out
+# for itself would be a second definition, free to drift from the first.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# A second push to a branch makes the first run's answer stale, so let it go.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Named for the guarantee rather than its steps. This id is what a reviewer
+  # reads on the PR ("CI / green") and what a ruleset would name if the repo
+  # ever gains one, and renaming a required check silently un-requires it — so
+  # it must survive any change to what the job actually runs.
+  green:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # 3.9 is the floor pyproject declares and ruff targets; running the ceiling
+      # instead would let 3.10-only syntax through.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.9'
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # Both scripts invoke backend/.venv/bin/... by path, so the venv has to
+      # exist exactly there. Installing into the runner's system Python would
+      # leave them pointing at nothing.
+      #
+      # pip is upgraded first because `-e` on a hatchling project is a PEP 660
+      # editable install, which pip only learned in 21.3 — a fresh 3.9 venv can
+      # still ship one older than that, and it fails asking for setup.py.
+      #
+      # No `playwright install chromium`: browser.py imports only the Python
+      # package at module level, the binary is touched inside a method at
+      # runtime, and every test fakes the browser — ~100MB for nothing.
+      - name: Build backend/.venv
+        working-directory: backend
+        run: |
+          python3 -m venv .venv
+          ./.venv/bin/pip install --upgrade pip
+          ./.venv/bin/pip install -e ".[dev]"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - run: ./lint.sh
+
+      - run: ./test.sh
+
+      # vitest runs components under jsdom and never bundles, so a broken import
+      # or a Vite config error is invisible to it and shows up only here.
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
