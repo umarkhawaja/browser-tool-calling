@@ -8,9 +8,13 @@ A local browser agent: a local LLM (llama3.1 via Ollama) drives a headless
 Chromium through Playwright to accomplish web tasks typed into a chat panel.
 Python/FastAPI backend + React/Vite frontend, connected by a single WebSocket.
 
-`README.md` covers setup/usage; `docs/how-it-works.md` and
-`docs/code-walkthrough.md` cover the design in depth — read them before
-non-trivial changes. **GitHub issues are the backlog**, each filed with enough
+`README.md` covers setup/usage; `docs/how-it-works.md` covers the design in depth
+— read it before non-trivial changes. It is the only such doc on purpose: a
+second one, `docs/code-walkthrough.md`, traced the same subsystems call by call
+and had drifted from the signatures it named, which is the failure mode of a doc
+precise enough to go stale. Depth belongs in `how-it-works.md`, the wire protocol
+in `main.py`'s docstring, and the rules here. **GitHub issues are the backlog**,
+each filed with enough
 detail to pick up cold and labelled `p1`/`p2`/`p3` by how soon it will hurt;
 check them before proposing new work (`gh issue list --label p1`). The old
 `BACKLOG.md` is gone: a tracker that closes an item when its PR merges beats a
