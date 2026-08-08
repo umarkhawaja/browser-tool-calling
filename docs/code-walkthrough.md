@@ -214,7 +214,7 @@ User      ChatPanel        useAgentSocket        main.ws          router     age
 
 ---
 
-## 5. Two subsystems worth calling out
+## 5. Subsystems worth calling out
 
 ### Clicking by index (no brittle selectors)
 `COLLECT_JS` stamps each listed element with `data-agent-idx="i"`. The model sees
