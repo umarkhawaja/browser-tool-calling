@@ -1,7 +1,6 @@
 // Fonts are bundled rather than fetched: this app's whole premise is that it
 // runs on your machine, so it should not need the network in order to render.
 import "@fontsource-variable/ibm-plex-sans";
-import "./ci-probe-missing-module.js";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-sans-condensed/600.css";
