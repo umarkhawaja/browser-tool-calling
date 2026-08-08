@@ -17,9 +17,9 @@ The site is small on purpose, and every fact sits *behind* the interaction the
 case is meant to exercise — a price one click past the index, a stock count only
 a filled-in form will produce. A task answerable from the landing page would
 measure nothing, which is what `test_no_fact_can_be_read_from_the_landing_page`
-holds it to. The index also opens under a consent overlay whose "Reject all"
-wrecks the page, so `dismiss_overlays` picking the wrong button is loud rather
-than invisible.
+holds it to. The index also opens under a consent overlay whose reject button
+wrecks the page and is labelled so that a substring match reaches it first, so
+`dismiss_overlays` losing its exact matching is loud rather than invisible.
 
 Grading is by outcome, not by method: a case passes when the final answer names
 the fact and does not name the decoy that lives one page over. How many actions
@@ -52,15 +52,24 @@ from app.browser import BrowserSession
 from app.config import MAX_STEPS, MODEL
 
 # --- the fixture site --------------------------------------------------------
-# A consent wall the agent has to get past before it can read anything, with the
-# negative button a substring match would happily hit. Accepting removes it;
-# rejecting replaces the page, so a wrong click cannot pass for a right one.
-CONSENT = """
+# A consent wall the agent has to get past before it can read anything. Both
+# labels are picked against `CONSENT_LABELS`, not for flavour: "OK" is on that
+# list and matches exactly, while "I do not agree" is the very phrase
+# `dismiss_overlays` says it must never hit — and it is reached by "Agree",
+# which comes *earlier* in the list, so the first label that hits is the wrong
+# one. Exact matching therefore opens the wall; loosening it to a substring
+# clicks reject, which replaces the page and fails the case. Without that
+# ordering a loosened match still lands on accept and the eval stays green,
+# which is worse than not covering it at all.
+ACCEPT_LABEL = "OK"
+REJECT_LABEL = "I do not agree"
+
+CONSENT = f"""
 <div id=consent style="position:fixed;inset:0;background:#111;color:#eee;
      padding:3rem;font:16px sans-serif;z-index:9">
   <p>Cloud Kit uses cookies.</p>
-  <button onclick="document.getElementById('consent').remove()">Accept all</button>
-  <button onclick="document.body.textContent='Cookies rejected.'">Reject all</button>
+  <button onclick="document.getElementById('consent').remove()">{ACCEPT_LABEL}</button>
+  <button onclick="document.body.textContent='Cookies rejected.'">{REJECT_LABEL}</button>
 </div>
 """
 
@@ -261,6 +270,24 @@ class Outcome:
 _URLISH = re.compile(r"(https?://|127\.0\.0\.1|localhost)\S*", re.IGNORECASE)
 
 
+def says(text: str, fact: str) -> bool:
+    """Whether `text` states `fact` — not merely contains its characters.
+
+    The facts are numbers, and a plain substring test reads "£4200" as "£42" and
+    "17 units" as "7". Both directions of that are bad: the first passes exactly
+    the confident misreading the eval exists to catch, and the mirror image fails
+    a correct answer because some unrelated number shares the decoy's digits. So
+    a run of digits has to be the whole run, not a piece of a longer one — which
+    is a no-op for any fact that is not a number.
+
+    Public because the suite asks the *same* question of the fixture site — does
+    this page state the fact the case wants? Asking it a second way is how the
+    site's guard and the grader drift apart, and a fixture priced at £420 then
+    satisfies the suite while failing every live run.
+    """
+    return re.search(rf"(?<!\d){re.escape(fact.lower())}(?!\d)", text.lower()) is not None
+
+
 def grade(case: Case, events: list[dict[str, Any]]) -> Outcome:
     """Decide whether the events of one run answered the case.
 
@@ -285,8 +312,8 @@ def grade(case: Case, events: list[dict[str, Any]]) -> Outcome:
 
     answer = answers[-1]
     prose = _URLISH.sub(" ", answer).lower()
-    missing = [want for want in case.expects if want.lower() not in prose]
-    decoys = [decoy for decoy in case.rejects if decoy.lower() in prose]
+    missing = [want for want in case.expects if not says(prose, want)]
+    decoys = [decoy for decoy in case.rejects if says(prose, decoy)]
 
     problems = []
     if missing:
@@ -330,8 +357,11 @@ async def run_case(case: Case, base: str) -> Outcome:
             _trace(event)
 
     browser = BrowserSession()
-    await browser.start()
     try:
+        # `start()` is inside the guard, not before it: the likeliest failure in
+        # a fresh checkout is Chromium never having been installed, and raising
+        # here would take the whole script down before anything was graded.
+        await browser.start()
         await run_agent(case.task.format(base=base), browser, emit)
     except Exception as e:  # a crash is this case's result, not the script's end
         events.append({"type": "error", "text": f"{type(e).__name__}: {e}"})

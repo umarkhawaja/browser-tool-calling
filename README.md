@@ -85,7 +85,7 @@ cd backend && ./.venv/bin/python tools/browse_eval.py     # needs Ollama + Chrom
 
 ```
   price  Go to http://127.0.0.1:61397 and tell me the price of the Nimbus 3000.
-    · go_to_url     Navigated to http://127.0.0.1:61397/; Accepted a cookie dialog…
+    · go_to_url     Navigated to http://127.0.0.1:61397/; Accepted a cookie/consent…
     · click         Clicked element [0] 'Products'
     · click         Clicked element [3] 'Nimbus 3000'
     · extract_text  Nimbus 3000 Price: £42 Made in Bristol. Back to products
