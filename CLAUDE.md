@@ -195,6 +195,30 @@ preserved: `_looks_like_tool_json` catches a tool call written as text in the
 message body and nudges the model instead of accepting it as the final answer;
 `_parse_args` tolerates arguments arriving as a JSON string rather than a dict.
 
+**The transcript is trimmed on the way out, never in place.** `messages` grows
+by a page listing plus up to 4000 characters of `extract_text` every step, and
+outgrows `num_ctx` well before `MAX_STEPS`. Ollama enforces that window by
+dropping from the *front* and reporting nothing, so the system prompt and the
+task are the first casualties and the run continues, competently, having
+forgotten what it was asked — a failure that leaves no trace to read.
+`llm.fit_to_context` therefore decides what to lose: the opening is pinned, the
+newest turn is kept whole (its listing is the one about to be acted on), **every
+older turn is reduced to one line first**, and only the budget left over buys
+recent turns back to full text (up to `_KEEP_VERBATIM`). That order is
+load-bearing and was measured, not guessed: keeping the last three turns whole
+first — the obvious reading — leaves no room for a single summary on a page as
+heavy as Hacker News, so a 15-step run reaches the end with no record of steps
+1–12 and repeats them. A line costs a twentieth of a turn; it is bought first.
+It trims in **turns** — an assistant message plus the
+tool results answering it — because Ollama rejects a tool result it cannot trace
+back to a call; a trimmer working message by message severs a pair only at some
+budgets, so `test_trimming_drops_whole_turns_so_no_tool_result_is_orphaned`
+sweeps the budget to walk the cut across every boundary. The budget lives in
+`llm.py` beside `NUM_CTX`, in characters rather than tokens deliberately: a
+pessimistic ratio costs a little history, and a tokenizer would cost a
+dependency and a round trip per step. `run_agent` keeps the full list and passes
+only the fitted view, recomputed each step, so the verbatim window slides.
+
 **Index-based DOM addressing** is the core browser trick (`browser.py`). Before
 each model turn, `COLLECT_JS` walks visible interactive elements, stamps each
 with `data-agent-idx`, and returns a numbered listing that `_format_state`

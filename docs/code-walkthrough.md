@@ -118,17 +118,22 @@ Example: the user types **"check top stories on bbc"** and presses Enter.
    initial page (URL + numbered elements) is seeded right into the first message.
    Then it loops up to `MAX_STEPS` (15). Each iteration:
 
-   1. **Ask the model, with tools** — `message = await chat_tools(messages, SCHEMAS)`.
+   1. **Ask the model, with tools** —
+      `message = await chat_tools(fit_to_context(messages), SCHEMAS)`.
       - **`agent.TOOLS`** is the table of everything the agent can do, one `Tool`
         per action (`go_to_url`, `click`, `input_text`, `press_enter`, `scroll`,
         `extract_text`, `dismiss_dialog`). Each holds the Ollama function schema
         *and* the handler that runs it. **`agent.SCHEMAS`** is the schema half,
         derived from that table, and is what Ollama is actually sent.
+      - **`llm.fit_to_context(messages)`** cuts the transcript down to what fits
+        `num_ctx`. `messages` itself keeps growing — this is only the *view* the
+        model is sent, recomputed each step. See *Keeping the transcript inside
+        the window* below.
       - **`llm.chat_tools(messages, tools, on_token)`** POSTs to Ollama
         `/api/chat` with the `tools` field, `stream:true`, `temperature:0.1` and
-        `num_ctx:8192`, reassembles the NDJSON chunks into one assistant message,
-        and reports each text delta to `on_token` (→ `token` events). Raises
-        `LLMError` if Ollama is down.
+        `num_ctx:NUM_CTX` (8192), reassembles the NDJSON chunks into one
+        assistant message, and reports each text delta to `on_token` (→ `token`
+        events). Raises `LLMError` if Ollama is down.
    2. **Append** that assistant message to `messages`.
    3. **Finish check** — if the message has **no `tool_calls`**, the model is done:
       `emit({"type":"answer", "text": content})` and **return**.
@@ -209,7 +214,7 @@ User      ChatPanel        useAgentSocket        main.ws          router     age
 
 ---
 
-## 5. Two subsystems worth calling out
+## 5. Subsystems worth calling out
 
 ### Clicking by index (no brittle selectors)
 `COLLECT_JS` stamps each listed element with `data-agent-idx="i"`. The model sees
@@ -224,6 +229,41 @@ still sitting in the transcript — cannot resolve to something else.
 **`BrowserSession._element(index)`**, the one way in for both `click` and
 `input_text`, raises `StaleIndex` for anything the latest reading did not report;
 the loop hands that message back to the model with a fresh listing attached.
+
+### Keeping the transcript inside the window
+Every step appends an assistant message *and* a tool message carrying the action
+result plus a fresh page listing — up to 4000 characters of `extract_text` and 60
+elements at a time, for up to `MAX_STEPS` turns. That outgrows `num_ctx` long
+before the step limit, and Ollama enforces the window by dropping messages from
+the **front**, silently: the system prompt and the task go first, and the run
+carries on looking healthy while following instructions it can no longer read.
+
+**`llm.fit_to_context(messages)`** decides what to lose instead:
+
+- the **opening is pinned** — the system prompt and the `Task:` message never go;
+- the **newest turn is never touched**, because its listing is the one the model
+  is about to act on;
+- **every older turn starts as one line** (`_elide` keeps the result's first
+  line and drops the stale listing), and only the oldest of those are dropped
+  outright if even that floor overflows;
+- **what is left over then buys back full text**, newest first, up to
+  `_KEEP_VERBATIM` (3) turns;
+- trimming works in **turns**, not messages — an assistant message plus the tool
+  results answering it — because Ollama rejects a tool result it cannot trace
+  back to a tool call.
+
+That last ordering matters more than it looks. Taking the recent turns whole
+*first* is the obvious reading of "keep the last N", and measured against a real
+Hacker News page it is wrong: three verbatim turns fill the window between them,
+leaving room for not one summary line, so a 15-step run reached step 15 with no
+record of steps 1–12 and was free to redo them. A line costs a twentieth of a
+turn; it is bought first.
+
+The budget is `CONTEXT_BUDGET_CHARS`, measured in characters over the JSON
+actually sent: `NUM_CTX` minus room for the tool schemas and the reply, times a
+deliberately pessimistic 3 characters per token. `run_agent` keeps its full
+`messages` list; this is only the view sent to the model, recomputed each step so
+the verbatim window slides forward with the run.
 
 ### Live preview via CDP screencast
 **`BrowserSession.add_frame_sink(on_frame)`** registers a subscriber and, on the
@@ -307,6 +347,7 @@ action.
 - `router.route(message)` → `{mode}` — LLM classifier; `router.chat_reply(message, on_token)` — streams a chat answer.
 - `agent.run_agent(task, browser, emit)` — the tool-calling loop; `agent.TOOLS` — the table of `Tool(name, schema, run)`, one row per action; `agent.SCHEMAS` — the schema half, derived, sent to Ollama; `agent._format_state(url, elements)`; `agent._observe(browser)`; `agent._parse_args(raw)`; `agent._looks_like_tool_json(content)`.
 - `llm.chat_tools(messages, tools)` — Ollama call with `tools` → assistant message with `tool_calls` (raises `LLMError`).
+- `llm.fit_to_context(messages)` — the transcript cut to `CONTEXT_BUDGET_CHARS`: opening pinned, newest turn whole, older turns elided to a line then dropped.
 - `llm.chat_json(messages)` — Ollama call in JSON mode → parsed dict; used by the router.
 - `browser.BrowserSession`:
   - lifecycle: `start()`, `stop()`

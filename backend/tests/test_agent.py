@@ -3,13 +3,15 @@ without Ollama or a real Chromium."""
 
 import asyncio
 import contextlib
+import json
 
 import pytest
 
 from app import agent
 from app.agent import SCHEMAS, TOOLS, _format_state, run_agent
 from app.browser import StaleIndex
-from app.llm import LLMError
+from app.config import MAX_STEPS
+from app.llm import CONTEXT_BUDGET_CHARS, LLMError
 
 
 class FakeBrowser:
@@ -375,6 +377,97 @@ async def test_nudged_tool_json_tokens_are_discarded(monkeypatch):
     kinds = [e["type"] for e in events]
     assert "token_reset" in kinds
     assert kinds.index("token_reset") < kinds.index("answer")
+
+
+# --- the context budget ----------------------------------------------------
+# Ollama truncates an overlong transcript from the front without saying so, which
+# drops the system prompt and the task while the run carries on looking healthy.
+# These drive a full-length run over a heavy page and check what the model was
+# actually handed on the last step.
+class BulkyBrowser(FakeBrowser):
+    """A page as big as the model is ever shown: a full listing, and the most
+    text `extract_text` will return."""
+
+    async def elements(self):
+        return [
+            {
+                "index": i,
+                "tag": "a",
+                "type": "",
+                "label": f"Some reasonably wordy link label number {i}",
+            }
+            for i in range(agent.MODEL_ELEMENT_LIMIT)
+        ]
+
+    async def extract_text(self):
+        self.calls.append(("extract_text",))
+        return "Lorem ipsum dolor sit amet, consectetur adipiscing elit. " * 70
+
+
+def _wire_size(messages):
+    """What the transcript costs, measured the way it is actually sent."""
+    return len(json.dumps(messages))
+
+
+async def _long_run(monkeypatch, task):
+    """Run the agent until it hits the step limit, collecting each transcript."""
+    seen = []
+    monkeypatch.setattr(
+        agent,
+        "chat_tools",
+        _scripted([_tool_call("extract_text", {}) for _ in range(MAX_STEPS)], seen),
+    )
+
+    async def emit(e):
+        pass
+
+    await run_agent(task, BulkyBrowser(), emit)
+    assert len(seen) == MAX_STEPS, "the run should have used its whole step budget"
+    return seen
+
+
+async def test_a_long_run_stays_inside_the_context_budget(monkeypatch):
+    task = "find the cheapest flight to Lisbon in March"
+    seen = await _long_run(monkeypatch, task)
+
+    for step, transcript in enumerate(seen):
+        assert _wire_size(transcript) <= CONTEXT_BUDGET_CHARS, (
+            f"step {step} sent {_wire_size(transcript)} chars, "
+            f"over the {CONTEXT_BUDGET_CHARS} budget"
+        )
+
+    # The point of the budget: what gets dropped is old page listings, never the
+    # instructions or the thing the user actually asked for.
+    final = seen[-1]
+    assert final[0]["role"] == "system"
+    assert agent.SYSTEM_PROMPT in final[0]["content"]
+    assert any(task in (m.get("content") or "") for m in final), (
+        "the task fell out of the window — exactly the failure this guards"
+    )
+
+
+async def test_trimming_leaves_the_current_page_listing_intact(monkeypatch):
+    # Old listings are the bloat and are stale anyway; the newest one is what the
+    # model has to act on, so it must survive untouched.
+    seen = await _long_run(monkeypatch, "read the page")
+    assert "Interactive elements:" in seen[-1][-1]["content"]
+    assert f"[{agent.MODEL_ELEMENT_LIMIT - 1}]" in seen[-1][-1]["content"]
+
+
+async def test_trimming_never_orphans_a_tool_result(monkeypatch):
+    # Ollama rejects a tool message that does not answer a preceding tool call,
+    # so trimming may drop whole turns but never half of one.
+    for transcript in await _long_run(monkeypatch, "read the page"):
+        for i, message in enumerate(transcript):
+            if message.get("role") != "tool":
+                continue
+            previous = next(
+                m for m in reversed(transcript[:i]) if m.get("role") != "tool"
+            )
+            assert previous.get("tool_calls"), (
+                f"tool result at {i} follows a {previous.get('role')} "
+                "message that never called a tool"
+            )
 
 
 # --- pause gate ------------------------------------------------------------
