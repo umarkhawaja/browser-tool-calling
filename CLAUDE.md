@@ -93,17 +93,31 @@ interface instead (*adding a tool touches one place*), plus a green suite.
   a visible surface is verified in the running app rather than reasoned about.
   `.github/workflows/ci.yml` runs the first half on a clean runner — those two
   scripts *unchanged*, plus `npm run build` — and reports as `CI / green` on every
-  PR and push to `main`. It is **advisory**: no ruleset requires the `CI / green`
-  check today, so only reading it stops a red merge. That gate was unavailable
-  while the repo was private on the free plan — branch protection and rulesets
-  both answered `403` — and is worth setting up now the repo is public and gets
-  both; this line is what to correct when someone does. And no runner looks at
-  the page, so green is the cheap half of the rule, not the rule.
+  PR and push to `main`. A ruleset **requires** that check, so a red run is not a
+  thing to weigh and merge past — nobody can, the owner included (see *Merging*
+  below). And no runner looks at the page, so green is the cheap half of the
+  rule, not the rule.
 - **Commit at task granularity.** One coherent commit (or a short ordered series)
   per branch, saying what the issue was and why the fix takes the shape it does.
 - **Stop at the boundary.** If a task genuinely needs another to land first, say
   so and stop rather than quietly widening the branch. Pushing, merging or
   opening a PR happens only when asked.
+
+**Merging.** Two rulesets protect `main`, and they differ only in who may bypass.
+*main: pull request and green CI* has **no bypass at all**: nobody pushes to
+`main` directly, force-pushes it, deletes it, or merges a PR whose `CI / green`
+is red or whose conversations are unresolved — the owner included, which is the
+point of it. *main: contributor changes need owner review* adds one approving
+review from a `.github/CODEOWNERS` owner, and grants repository admins bypass,
+because GitHub never lets anyone approve their own PR and a sole owner bound by
+that rule could never merge at all.
+
+They are two rulesets rather than one because **bypass is granted per ruleset,
+not per rule**. Folding the review requirement into the first would have meant
+granting the owner bypass over the whole set, so the same click that let a solo
+owner merge their own work would also have let anyone with admin push straight
+to `main` with CI red. A rule that has to let someone through is kept where it
+cannot take the others with it.
 
 ## Test-driven development
 
