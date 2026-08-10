@@ -1,0 +1,15 @@
+# Who "an approving review" has to come from.
+#
+# Without this file the ruleset could only require *an* approval, which any
+# account with write access could give — including another contributor
+# approving a second contributor. Naming an owner for every path is what makes
+# the requirement mean "the owner reviewed it".
+#
+# This does not gate the owner's own pull requests, and cannot: GitHub never
+# lets anyone approve their own PR, so a sole owner bound by this rule could
+# never merge anything. The review ruleset grants repository admins bypass for
+# exactly that reason. The rules worth having against yourself — pull request
+# required, `CI / green`, no force-push, no deletion — live in a separate
+# ruleset with no bypass at all, so this exemption cannot reach them.
+
+* @umarkhawaja

@@ -21,10 +21,14 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Named for the guarantee rather than its steps. This id is what a reviewer
-  # reads on the PR ("CI / green") and what a ruleset would name if the repo
-  # ever gains one, and renaming a required check silently un-requires it — so
-  # it must survive any change to what the job actually runs.
+  # Named for the guarantee rather than its steps. Renaming it silently
+  # un-requires the check, so it must survive any change to what the job runs.
+  #
+  # The ruleset requires this job id *alone* — `green`, not the "CI / green" a
+  # reviewer reads on the PR. That label is the workflow and job joined for
+  # display; the check run GitHub publishes is named for the job only, and a
+  # ruleset naming the displayed form matches nothing and blocks every merge
+  # waiting for a check that will never report.
   green:
     runs-on: ubuntu-latest
     steps:
