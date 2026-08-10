@@ -13,10 +13,9 @@ on:
 
 # A second push to a *pull request* makes the first run's answer stale, so let it
 # go. A push to `main` is not stale in the same way: each merged commit is its own
-# record, and the check is the only thing recording it, since branch protection
-# 403s on this plan. Cancelling there would leave the first of two quick merges
-# permanently marked "cancelled" rather than green — a hole exactly where the
-# check is load-bearing.
+# record, and this check is the only thing recording it. Cancelling there would
+# leave the first of two quick merges permanently marked "cancelled" rather than
+# green — a hole exactly where the check is load-bearing.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

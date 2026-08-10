@@ -93,10 +93,12 @@ interface instead (*adding a tool touches one place*), plus a green suite.
   a visible surface is verified in the running app rather than reasoned about.
   `.github/workflows/ci.yml` runs the first half on a clean runner — those two
   scripts *unchanged*, plus `npm run build` — and reports as `CI / green` on every
-  PR and push to `main`. It is **advisory**: on this private repo's free plan
-  branch protection and rulesets both answer `403`, so only reading the check
-  stops a red merge. And no runner looks at the page, so green is the cheap half
-  of the rule, not the rule.
+  PR and push to `main`. It is **advisory**: no ruleset requires the `CI / green`
+  check today, so only reading it stops a red merge. That gate was unavailable
+  while the repo was private on the free plan — branch protection and rulesets
+  both answered `403` — and is worth setting up now the repo is public and gets
+  both; this line is what to correct when someone does. And no runner looks at
+  the page, so green is the cheap half of the rule, not the rule.
 - **Commit at task granularity.** One coherent commit (or a short ordered series)
   per branch, saying what the issue was and why the fix takes the shape it does.
 - **Stop at the boundary.** If a task genuinely needs another to land first, say
