@@ -207,3 +207,7 @@ lint.sh                    run both linters
 dev.sh                     run backend + frontend together
 test.sh                    run both test suites
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).

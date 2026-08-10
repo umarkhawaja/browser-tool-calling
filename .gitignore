@@ -27,6 +27,10 @@ test-results/
 playwright-report/
 
 # ---- Editors / OS ----
+# .claude/ is local agent tooling, not part of the project: it holds machine
+# paths in settings.local.json, and ignoring the directory rather than that one
+# file is what keeps a `git add -A` from publishing whatever lands there next.
+.claude/
 .vscode/
 .idea/
 *.swp
