@@ -5,7 +5,7 @@ asks of a change is written down rather than assumed.
 
 **`CLAUDE.md` is the binding document.** It sets out how work is scoped, how
 tests are written, and what "deep module" means here, with the reasoning behind
-each rule — most review comments on this repo are a pointer back into it. It is
+each rule, so review can point at a rule rather than at a preference. It is
 addressed to Claude Code because that is what writes most of the code here, but
 the rules are the project's, not the tool's, and they apply to everyone.
 
@@ -35,6 +35,10 @@ gh issue list --label p1     # will bite in ordinary use
 gh issue list --label p2     # real, but survivable
 gh issue list --label p3     # worth doing, not urgent
 ```
+
+One label is not a priority: `not-a-task` means the issue cannot be sliced
+vertically as it stands, so it is parked rather than queued. Say what would make
+it one before you start on it.
 
 Issues drift, because they are written by hand and the code moves. Read the files
 an issue cites and confirm the behaviour it describes still happens before you
@@ -72,17 +76,16 @@ something the suite missed, break your fix deliberately, confirm the new test
 goes red, restore it, and say so in the pull request. "Confirmed failing before
 the fix" is the sentence a reviewer trusts.
 
-The exemptions are a **closed list** — documentation and comments, configuration
-and dependency pins, pure restructurings already covered by a green suite, and
-throwaway spikes. "Obvious" one-liners are *not* exempt. If you think your change
-belongs outside that list, say why in the pull request rather than deciding
-quietly; widening it is a change to `CLAUDE.md`.
+The exemptions are a **closed list**, and a short one: `CLAUDE.md` has it, and
+that is the only copy on purpose, because widening the list *is* an edit to that
+file. "Obvious" one-liners are not on it. If you think your change belongs
+outside the list, say why in the pull request rather than deciding quietly.
 
-Test at the level the defect lives — a bug in tool dispatch belongs in
-`test_agent.py` driving `run_agent`, not in a unit test of a private helper.
-Backend tests fake both the LLM and the browser, so no test needs Ollama or
-Chromium; follow that. `CLAUDE.md` covers the rest, including `browse_eval.py`,
-the opt-in harness for what the fakes cannot tell you.
+Test at the level the defect lives, not the level that is easiest to reach — a
+unit test of a private helper is usually the wrong altitude, and `CLAUDE.md` has
+the worked example. Backend tests fake both the LLM and the browser, so no test
+needs Ollama or Chromium; follow that. `CLAUDE.md` covers the rest, including
+`browse_eval.py`, the opt-in harness for what the fakes cannot tell you.
 
 ## Green before done
 
@@ -110,10 +113,10 @@ from a branch on your fork. Branch naming follows the repo's own:
 Put `Closes #<issue>` in the description so merging closes it, and say what the
 issue was and **why the fix takes the shape it does** — the shape is the part a
 reviewer cannot reconstruct from the diff. Include the doc updates your change
-implies; `CLAUDE.md`, `docs/how-it-works.md` and the protocol docstring in
-`main.py` are part of the branch, not follow-up work.
+implies; `CLAUDE.md`, `docs/how-it-works.md`, the protocol docstring in `main.py`
+and this file are part of the branch, not follow-up work.
 
-Then two things gate it, both automatic:
+Then two things gate it, both enforced by the repository rather than by custom:
 
 - **`green`** — the CI job in `.github/workflows/ci.yml`, running `./lint.sh`,
   `./test.sh` and `npm run build` on a clean machine. It is a **required check**:
@@ -122,18 +125,23 @@ Then two things gate it, both automatic:
   also requires.
 - **A review from the code owner** — `.github/CODEOWNERS`. Pull requests from
   contributors need one approving review before they can merge, and the owner
-  presses merge; there is no path around this and you should not expect one.
+  presses merge; there is no path around this and you should not expect one. An
+  approval covers the commits it was given on, so pushing after one lands
+  dismisses it — a fix made during review needs a fresh look, not just a fresh
+  green run.
 
 Conversations on the pull request must be resolved before it merges, so reply to
 review comments rather than silently pushing over them.
 
 ## What to expect
 
-Review here is direct and tends to be specific — a comment usually cites a rule
-in `CLAUDE.md` and what the diff does instead. It is about the change, not about
-you. Pushing back is fine and often right, especially when the rule genuinely
-does not fit the case; that argument belongs in the thread, where the outcome
-sometimes is that `CLAUDE.md` changes.
+Expect review to be specific, and to be about the change rather than about you.
+The point of having the rules written down is that a comment can name the one a
+diff misses instead of trading tastes. Pushing back is legitimate, especially
+when a rule genuinely does not fit your case — make that argument in the thread
+rather than working around it quietly. The rules are not immovable either: the
+exemption list above says as much about itself, and changing a rule means
+changing `CLAUDE.md`, which is a pull request like any other.
 
 Small, boring and complete beats large and impressive. A thin fix with a test
 that was watched failing will land faster than a broad improvement that a
