@@ -208,6 +208,12 @@ dev.sh                     run backend + frontend together
 test.sh                    run both test suites
 ```
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how a change gets scoped, tested and
+merged here — and `CLAUDE.md`, which it defers to, for why each rule is the shape
+it is.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

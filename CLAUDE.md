@@ -13,7 +13,12 @@ Python/FastAPI backend + React/Vite frontend, connected by a single WebSocket.
 second one, `docs/code-walkthrough.md`, traced the same subsystems call by call
 and had drifted from the signatures it named, which is the failure mode of a doc
 precise enough to go stale. Depth belongs in `how-it-works.md`, the wire protocol
-in `main.py`'s docstring, and the rules here. **GitHub issues are the backlog**,
+in `main.py`'s docstring, and the rules here. `CONTRIBUTING.md` is the one other
+doc that touches these rules, and covers only what this file structurally cannot
+— the path from outside the repository, where you fork, cannot merge, and need an
+owner's approval. It states rules and points here for the argument, and keeps no
+second copy of a rule, so changing one here should not need an edit there; if it
+does, the copy is the bug. **GitHub issues are the backlog**,
 each filed with enough
 detail to pick up cold and labelled `p1`/`p2`/`p3` by how soon it will hurt;
 check them before proposing new work (`gh issue list --label p1`). The old
@@ -87,7 +92,8 @@ interface instead (*adding a tool touches one place*), plus a green suite.
   and check the described behaviour still holds. Issues are written by hand and
   drift; say so in a comment when one has.
 - **Finish the issue, not the easy half.** The fix, its tests and the doc updates
-  it implies (`CLAUDE.md`, `docs/`, `main.py`'s protocol docstring) are all in the
+  it implies (`CLAUDE.md`, `CONTRIBUTING.md` when the change reaches how a change
+  gets merged, `docs/`, `main.py`'s protocol docstring) are all in the
   branch, and the PR says `Closes #<issue>` so merging closes it.
 - **Green before done.** `./test.sh` and `./lint.sh` both pass, and anything with
   a visible surface is verified in the running app rather than reasoned about.
